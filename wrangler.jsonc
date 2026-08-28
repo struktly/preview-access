@@ -8,7 +8,7 @@
   "workers_dev": false,
   "routes": [
     {
-      "pattern": "preview-access.struktly.io",
+      "pattern": "preview-access.struktly.app",
       "custom_domain": true
     }
   ],
