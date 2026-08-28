@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
-import worker from "../src/index";
+import worker from "../src/index.js";
 
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 

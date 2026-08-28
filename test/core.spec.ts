@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { escapeHtml, githubLoginPattern, parseRepository } from "../src/core";
+import { escapeHtml, githubLoginPattern, parseRepository } from "../src/core.js";
 
 describe("public input boundaries", () => {
   it("accepts valid GitHub usernames and rejects malformed ones", () => {

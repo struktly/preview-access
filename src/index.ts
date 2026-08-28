@@ -1,5 +1,6 @@
-import { createRemoteJWKSet, importPKCS8, jwtVerify, SignJWT } from "jose";
-import { escapeHtml, githubLoginPattern, parseRepository } from "./core";
+import { createRemoteJWKSet, jwtVerify } from "jose";
+import { escapeHtml, githubLoginPattern, parseRepository } from "./core.js";
+import { signGitHubAppJwt } from "./github.js";
 
 const githubApiVersion = "2026-03-10";
 
@@ -82,14 +83,7 @@ async function findRequest(env: Env, login: string): Promise<AccessRequest | nul
 }
 
 async function githubAppJwt(env: Env): Promise<string> {
-  const key = await importPKCS8(env.GITHUB_APP_PRIVATE_KEY, "RS256");
-  const now = Math.floor(Date.now() / 1000);
-  return new SignJWT({})
-    .setProtectedHeader({ alg: "RS256" })
-    .setIssuedAt(now - 60)
-    .setIssuer(env.GITHUB_APP_ID)
-    .setExpirationTime(now + 9 * 60)
-    .sign(key);
+  return signGitHubAppJwt(env.GITHUB_APP_ID, env.GITHUB_APP_PRIVATE_KEY);
 }
 
 async function githubRequest(
