@@ -1,0 +1,39 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "struktly-preview-access",
+  "account_id": "9693f3d71030a9384e5fd9e528ab0e0b",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-28",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "routes": [
+    {
+      "pattern": "preview-access.struktly.io",
+      "custom_domain": true
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "struktly-website-access",
+      "database_id": "f385b714-cc84-4726-a728-e217e5bfb92f",
+      "remote": true
+    }
+  ],
+  "vars": {
+    "ACCESS_TEAM_DOMAIN": "struktly.cloudflareaccess.com",
+    "ACCESS_AUD": "set-after-creating-the-access-application"
+  },
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "invocation_logs": true
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.01
+    }
+  }
+}
