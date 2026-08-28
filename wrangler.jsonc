@@ -6,12 +6,6 @@
   "compatibility_date": "2026-08-28",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": false,
-  "routes": [
-    {
-      "pattern": "preview-access.struktly.app",
-      "custom_domain": true
-    }
-  ],
   "d1_databases": [
     {
       "binding": "DB",

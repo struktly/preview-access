@@ -23,8 +23,9 @@ identity again. The Worker reads only pending macOS requests through its D1
 binding, mints a short-lived token from a repository-scoped GitHub App, sends a
 read-only invitation, and records the result. Repeating the click is safe.
 
-The Worker is unavailable on `workers.dev`; only the Access-protected custom
-domain is deployed.
+The Worker is unavailable on `workers.dev`. The private Struktly infrastructure
+repository owns its custom domain and Cloudflare Access policy through
+OpenTofu; this repository owns only the runtime deployment.
 
 ## Development
 
@@ -35,8 +36,9 @@ npm run check
 
 ## Deploying your own copy
 
-Update the non-secret account, database, hostname, team-domain, and Access AUD
-values in `wrangler.jsonc`. Then set these Worker secrets:
+Create the hostname and Access application in your infrastructure stack, then
+set the non-secret account, database, team-domain, and Access AUD values in
+`wrangler.jsonc`. Set these Worker secrets before deploying:
 
 ```sh
 npx wrangler secret put ADMIN_EMAIL
