@@ -1,5 +1,5 @@
 import { createRemoteJWKSet, jwtVerify } from "jose";
-import { escapeHtml, githubLoginPattern, parseRepository } from "./core.js";
+import { escapeHtml, githubLoginPattern, hasPreviewAccessOrigin, parseRepository } from "./core.js";
 import { signGitHubAppJwt } from "./github.js";
 
 const githubApiVersion = "2026-03-10";
@@ -219,7 +219,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
   if (request.method === "GET" && url.pathname === "/") return page(await listRequests(env));
 
   if (request.method === "POST" && url.pathname === "/approve") {
-    if (request.headers.get("origin") !== url.origin) throw new HttpError(403, "Invalid request origin");
+    if (!hasPreviewAccessOrigin(request)) throw new HttpError(403, "Invalid request origin");
     const contentType = request.headers.get("content-type") ?? "";
     if (!contentType.startsWith("application/x-www-form-urlencoded")) {
       throw new HttpError(415, "Unsupported request format");

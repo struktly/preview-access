@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { escapeHtml, githubLoginPattern, parseRepository } from "../src/core.js";
+import {
+  escapeHtml,
+  githubLoginPattern,
+  hasPreviewAccessOrigin,
+  parseRepository,
+  previewAccessOrigin,
+} from "../src/core.js";
 
 describe("public input boundaries", () => {
   it("accepts valid GitHub usernames and rejects malformed ones", () => {
@@ -16,5 +22,14 @@ describe("public input boundaries", () => {
 
   it("escapes every HTML-significant character", () => {
     expect(escapeHtml(`<a href='x'>&"`)).toBe("&lt;a href=&#39;x&#39;&gt;&amp;&quot;");
+  });
+
+  it("accepts POSTs only from the public approval origin", () => {
+    expect(hasPreviewAccessOrigin(new Request("https://internal-worker.example/approve", {
+      headers: { Origin: previewAccessOrigin },
+    }))).toBe(true);
+    expect(hasPreviewAccessOrigin(new Request(previewAccessOrigin, {
+      headers: { Origin: "https://attacker.example" },
+    }))).toBe(false);
   });
 });
