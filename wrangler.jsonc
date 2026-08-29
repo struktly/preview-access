@@ -16,7 +16,7 @@
   ],
   "vars": {
     "ACCESS_TEAM_DOMAIN": "struktly.cloudflareaccess.com",
-    "ACCESS_AUD": "set-after-creating-the-access-application"
+    "ACCESS_AUD": "2a7245b9ccfdec5c9ff0dde391a528dd64a62f3e0cd86987ae4ace26efe87544"
   },
   "observability": {
     "enabled": true,
