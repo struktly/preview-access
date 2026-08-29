@@ -13,6 +13,7 @@ type AccessRequest = {
 
 type Installation = { id: number };
 type InstallationToken = { token: string };
+type GitHubError = { message?: unknown };
 
 class HttpError extends Error {
   constructor(
@@ -111,6 +112,15 @@ async function readBoundedJson<T>(response: Response): Promise<T> {
   return response.json<T>();
 }
 
+async function githubErrorMessage(response: Response): Promise<string> {
+  try {
+    const body = await readBoundedJson<GitHubError>(response);
+    return typeof body.message === "string" ? body.message : "No error message";
+  } catch {
+    return "No error message";
+  }
+}
+
 async function installationToken(env: Env, owner: string, repo: string): Promise<string> {
   const appJwt = await githubAppJwt(env);
   const installationResponse = await githubRequest(
@@ -186,7 +196,7 @@ async function approve(env: Env, requestedLogin: string): Promise<"invited" | "a
       { method: "PUT", body: JSON.stringify({ permission: "pull" }) },
     );
     if (inviteResponse.status !== 201 && inviteResponse.status !== 204) {
-      throw new Error(`GitHub invitation failed (${inviteResponse.status})`);
+      throw new Error(`GitHub invitation failed (${inviteResponse.status}): ${await githubErrorMessage(inviteResponse)}`);
     }
     active = await isCollaborator(owner, repo, request.github_login, token);
   }
