@@ -6,7 +6,7 @@ const githubApiVersion = "2026-03-10";
 
 type AccessRequest = {
   github_login: string;
-  platform: "macos" | "both";
+  platform: "macos" | "linux" | "both";
   access_status: "pending" | "invited";
   created_at: string;
 };
@@ -63,7 +63,7 @@ async function listRequests(env: Env): Promise<AccessRequest[]> {
     `SELECT github_login, platform, access_status, created_at
      FROM access_requests
      WHERE github_login IS NOT NULL
-       AND platform IN ('macos', 'both')
+       AND platform IN ('macos', 'linux', 'both')
        AND access_status IN ('pending', 'invited')
      ORDER BY created_at ASC`,
   ).all<AccessRequest>();
@@ -75,7 +75,7 @@ async function findRequest(env: Env, login: string): Promise<AccessRequest | nul
     `SELECT github_login, platform, access_status, created_at
      FROM access_requests
      WHERE github_login = ?1 COLLATE NOCASE
-       AND platform IN ('macos', 'both')
+       AND platform IN ('macos', 'linux', 'both')
        AND access_status IN ('pending', 'invited')`,
   )
     .bind(login)
@@ -161,7 +161,7 @@ async function updateStatus(env: Env, login: string, status: "invited" | "active
          revoked_at = NULL,
          updated_at = CURRENT_TIMESTAMP
      WHERE github_login = ?1 COLLATE NOCASE
-       AND platform IN ('macos', 'both')
+       AND platform IN ('macos', 'linux', 'both')
        AND access_status IN ('pending', 'invited')`,
   )
     .bind(login, status)
