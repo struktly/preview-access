@@ -31,8 +31,20 @@ describe("public input boundaries", () => {
     expect(hasPreviewAccessOrigin(new Request("https://internal-worker.example/approve", {
       headers: { Referer: `${previewAccessOrigin}/` },
     }))).toBe(true);
+    expect(hasPreviewAccessOrigin(new Request("https://internal-worker.example/approve", {
+      headers: {
+        Origin: "null",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-User": "?1",
+      },
+    }))).toBe(true);
     expect(hasPreviewAccessOrigin(new Request(previewAccessOrigin, {
       headers: { Origin: "https://attacker.example" },
+    }))).toBe(false);
+    expect(hasPreviewAccessOrigin(new Request(previewAccessOrigin, {
+      headers: { Origin: "null" },
     }))).toBe(false);
   });
 });

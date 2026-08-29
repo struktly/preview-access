@@ -4,6 +4,15 @@ const repositoryPattern = /^([A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?)\/(
 
 export function hasPreviewAccessOrigin(request: Request): boolean {
   if (request.headers.get("origin") === previewAccessOrigin) return true;
+  if (
+    request.headers.get("origin") === "null" &&
+    request.headers.get("sec-fetch-site") === "same-origin" &&
+    request.headers.get("sec-fetch-mode") === "navigate" &&
+    request.headers.get("sec-fetch-dest") === "document" &&
+    request.headers.get("sec-fetch-user") === "?1"
+  ) {
+    return true;
+  }
   try {
     return new URL(request.headers.get("referer") ?? "").origin === previewAccessOrigin;
   } catch {
