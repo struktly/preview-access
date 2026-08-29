@@ -241,7 +241,10 @@ export default {
       return await handle(request, env);
     } catch (error) {
       const status = error instanceof HttpError ? error.status : 500;
-      if (status === 500) console.error(JSON.stringify({ event: "preview_access_error" }));
+      if (status === 500) {
+        const reason = error instanceof Error ? error.message : "Unknown error";
+        console.error(JSON.stringify({ event: "preview_access_error", reason }));
+      }
       const message = error instanceof HttpError ? error.message : "Internal server error";
       return new Response(message, { status, headers: secureHeaders("text/plain; charset=utf-8") });
     }
