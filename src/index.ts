@@ -186,7 +186,7 @@ async function approve(env: Env, requestedLogin: string): Promise<"invited" | "a
       { method: "PUT", body: JSON.stringify({ permission: "pull" }) },
     );
     if (inviteResponse.status !== 201 && inviteResponse.status !== 204) {
-      throw new Error("GitHub invitation failed");
+      throw new Error(`GitHub invitation failed (${inviteResponse.status})`);
     }
     active = await isCollaborator(owner, repo, request.github_login, token);
   }
