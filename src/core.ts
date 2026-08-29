@@ -3,7 +3,12 @@ export const previewAccessOrigin = "https://preview-access.struktly.app";
 const repositoryPattern = /^([A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?)\/([A-Za-z0-9._-]{1,100})$/;
 
 export function hasPreviewAccessOrigin(request: Request): boolean {
-  return request.headers.get("origin") === previewAccessOrigin;
+  if (request.headers.get("origin") === previewAccessOrigin) return true;
+  try {
+    return new URL(request.headers.get("referer") ?? "").origin === previewAccessOrigin;
+  } catch {
+    return false;
+  }
 }
 
 export function escapeHtml(value: string): string {

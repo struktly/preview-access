@@ -28,6 +28,9 @@ describe("public input boundaries", () => {
     expect(hasPreviewAccessOrigin(new Request("https://internal-worker.example/approve", {
       headers: { Origin: previewAccessOrigin },
     }))).toBe(true);
+    expect(hasPreviewAccessOrigin(new Request("https://internal-worker.example/approve", {
+      headers: { Referer: `${previewAccessOrigin}/` },
+    }))).toBe(true);
     expect(hasPreviewAccessOrigin(new Request(previewAccessOrigin, {
       headers: { Origin: "https://attacker.example" },
     }))).toBe(false);
