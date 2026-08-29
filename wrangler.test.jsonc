@@ -10,6 +10,12 @@
       "database_name": "preview-access-test"
     }
   ],
+  "r2_buckets": [
+    {
+      "binding": "RELEASES",
+      "bucket_name": "preview-access-test"
+    }
+  ],
   "vars": {
     "ACCESS_TEAM_DOMAIN": "test.cloudflareaccess.com",
     "ACCESS_AUD": "test-audience"

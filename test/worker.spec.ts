@@ -13,4 +13,12 @@ describe("access boundary", () => {
     expect(await response.text()).toBe("Access denied");
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
+
+  it("requires a separate Access token at the download hostname", async () => {
+    const request = new IncomingRequest("https://downloads.struktly.app/");
+    const response = await worker.fetch(request, env);
+
+    expect(response.status).toBe(403);
+    expect(await response.text()).toBe("Access denied");
+  });
 });

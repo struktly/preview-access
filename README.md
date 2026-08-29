@@ -4,24 +4,23 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Cloudflare Workers](https://img.shields.io/badge/runtime-Cloudflare%20Workers-f38020.svg)](https://workers.cloudflare.com/)
 
-A tiny admin page for approving preview access without GitHub Actions or a
-local Cloudflare token.
+A tiny approval and download service for preview builds without GitHub
+collaborator seats.
 
 1. Open the private page.
 2. Click **Approve**.
-3. The tester gets read-only access to release builds.
+3. The tester signs in at the download page and gets the approved builds.
 
-The source is public. The request data, administrator identity, GitHub App key,
-and release repository stay private in Cloudflare D1, Cloudflare Access, and
-Worker secrets. The page never displays emails or use-case text, and logs only
-the result state.
+The source is public. Request data and administrator identity stay private in
+Cloudflare D1 and Cloudflare Access. Release files stay in a private R2 bucket.
+The page never displays emails or use-case text, and logs only result states.
 
 ## How it works
 
-Cloudflare Access admits the administrator and the Worker verifies that signed
-identity again. The Worker reads only pending macOS requests through its D1
-binding, mints a short-lived token from a repository-scoped GitHub App, sends a
-read-only invitation, and records the result. Repeating the click is safe.
+Cloudflare Access protects both hostnames. The founder-only hostname approves a
+pending request in D1. The downloads hostname first verifies a separate Access
+identity and then serves R2 files only when that exact email has active preview
+access in D1. Repeating approval is safe.
 
 The Worker is unavailable on `workers.dev`. The private Struktly infrastructure
 repository owns its custom domain and Cloudflare Access policy through
@@ -36,19 +35,16 @@ npm run check
 
 ## Deploying your own copy
 
-Create the hostname and Access application in your infrastructure stack, then
-set the non-secret account, database, team-domain, and Access AUD values in
-`wrangler.jsonc`. Set these Worker secrets before deploying:
+Create the two hostnames, Access applications, and R2 bucket in your
+infrastructure stack. Set the account, database, team domain, and founder
+Access audience in `wrangler.jsonc`. Set these Worker secrets before deploying:
 
 ```sh
 npx wrangler secret put ADMIN_EMAIL
-npx wrangler secret put GITHUB_APP_ID
-npx wrangler secret put GITHUB_APP_PRIVATE_KEY
-npx wrangler secret put RELEASES_REPO
+npx wrangler secret put DOWNLOADS_ACCESS_AUD
 npm run deploy
 ```
 
-The GitHub App should be installed on exactly one private artifact repository
-with only `Administration: read and write`. That permission is required by
-GitHub to invite a read-only collaborator; installation tokens are restricted
-to that repository and expire automatically.
+`DOWNLOADS_ACCESS_AUD` is the Terraform output for the downloads Access
+application. The production deploy helper reads it from the encrypted
+infrastructure state configuration; it is not a GitHub credential.

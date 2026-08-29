@@ -1,25 +1,22 @@
 import { createRemoteJWKSet, jwtVerify } from "jose";
-import { escapeHtml, githubLoginPattern, hasPreviewAccessOrigin, parseRepository } from "./core.js";
-import { signGitHubAppJwt } from "./github.js";
+import {
+  escapeHtml,
+  githubLoginPattern,
+  hasPreviewAccessOrigin,
+  parseReleaseManifest,
+} from "./core.js";
 
-const githubApiVersion = "2026-03-10";
+const downloadsHostname = "downloads.struktly.app";
 
 type AccessRequest = {
   github_login: string;
   platform: "macos" | "linux" | "both";
-  access_status: "pending" | "invited";
+  access_status: "pending";
   created_at: string;
 };
 
-type Installation = { id: number };
-type InstallationToken = { token: string };
-type GitHubError = { message?: unknown };
-
 class HttpError extends Error {
-  constructor(
-    readonly status: number,
-    message: string,
-  ) {
+  constructor(readonly status: number, message: string) {
     super(message);
   }
 }
@@ -44,19 +41,35 @@ async function sameSecret(left: string, right: string): Promise<boolean> {
   return crypto.subtle.timingSafeEqual(leftHash, rightHash);
 }
 
-async function requireAdmin(request: Request, env: Env): Promise<void> {
+async function requireAccess(request: Request, env: Env, audience: string): Promise<string> {
   const token = request.headers.get("cf-access-jwt-assertion");
   if (!token) throw new HttpError(403, "Access denied");
 
   const issuer = `https://${env.ACCESS_TEAM_DOMAIN}`;
   const jwks = createRemoteJWKSet(new URL(`${issuer}/cdn-cgi/access/certs`));
-  const { payload } = await jwtVerify(token, jwks, {
-    audience: env.ACCESS_AUD,
-    issuer,
-  });
-  if (typeof payload.email !== "string" || !(await sameSecret(payload.email, env.ADMIN_EMAIL))) {
+  const { payload } = await jwtVerify(token, jwks, { audience, issuer });
+  if (typeof payload.email !== "string" || payload.email.length === 0) {
     throw new HttpError(403, "Access denied");
   }
+  return payload.email;
+}
+
+async function requireAdmin(request: Request, env: Env): Promise<void> {
+  const email = await requireAccess(request, env, env.ACCESS_AUD);
+  if (!(await sameSecret(email, env.ADMIN_EMAIL))) throw new HttpError(403, "Access denied");
+}
+
+async function requireApprovedDownloader(request: Request, env: Env): Promise<void> {
+  const email = await requireAccess(request, env, env.DOWNLOADS_ACCESS_AUD);
+  const result = await env.DB.prepare(
+    `SELECT 1
+     FROM access_requests
+     WHERE email = ?1 COLLATE NOCASE
+       AND access_status = 'active'
+       AND platform IN ('macos', 'linux', 'both')
+     LIMIT 1`,
+  ).bind(email).first();
+  if (!result) throw new HttpError(403, "Preview access is not active");
 }
 
 async function listRequests(env: Env): Promise<AccessRequest[]> {
@@ -65,168 +78,88 @@ async function listRequests(env: Env): Promise<AccessRequest[]> {
      FROM access_requests
      WHERE github_login IS NOT NULL
        AND platform IN ('macos', 'linux', 'both')
-       AND access_status IN ('pending', 'invited')
+       AND access_status = 'pending'
      ORDER BY created_at ASC`,
   ).all<AccessRequest>();
   return result.results;
 }
 
-async function findRequest(env: Env, login: string): Promise<AccessRequest | null> {
-  return env.DB.prepare(
-    `SELECT github_login, platform, access_status, created_at
-     FROM access_requests
-     WHERE github_login = ?1 COLLATE NOCASE
-       AND platform IN ('macos', 'linux', 'both')
-       AND access_status IN ('pending', 'invited')`,
-  )
-    .bind(login)
-    .first<AccessRequest>();
-}
+async function activateRequest(env: Env, requestedLogin: string): Promise<void> {
+  const login = requestedLogin.replace(/^@/, "");
+  if (!githubLoginPattern.test(login)) throw new HttpError(400, "Invalid GitHub username");
 
-async function githubAppJwt(env: Env): Promise<string> {
-  return signGitHubAppJwt(env.GITHUB_APP_ID, env.GITHUB_APP_PRIVATE_KEY);
-}
-
-async function githubRequest(
-  path: string,
-  token: string,
-  init: RequestInit = {},
-): Promise<Response> {
-  const response = await fetch(`https://api.github.com${path}`, {
-    ...init,
-    headers: {
-      Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      "User-Agent": "struktly-preview-access",
-      "X-GitHub-Api-Version": githubApiVersion,
-      ...init.headers,
-    },
-  });
-  return response;
-}
-
-async function readBoundedJson<T>(response: Response): Promise<T> {
-  const length = Number(response.headers.get("content-length") ?? "0");
-  if (length > 256_000) throw new Error("Unexpectedly large GitHub response");
-  return response.json<T>();
-}
-
-async function githubErrorMessage(response: Response): Promise<string> {
-  try {
-    const body = await readBoundedJson<GitHubError>(response);
-    return typeof body.message === "string" ? body.message : "No error message";
-  } catch {
-    return "No error message";
-  }
-}
-
-async function installationToken(env: Env, owner: string, repo: string): Promise<string> {
-  const appJwt = await githubAppJwt(env);
-  const installationResponse = await githubRequest(
-    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/installation`,
-    appJwt,
-  );
-  if (!installationResponse.ok) throw new Error("GitHub App installation lookup failed");
-  const installation = await readBoundedJson<Installation>(installationResponse);
-  if (!Number.isSafeInteger(installation.id)) throw new Error("Invalid GitHub App installation response");
-
-  const tokenResponse = await githubRequest(
-    `/app/installations/${installation.id}/access_tokens`,
-    appJwt,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        repositories: [repo],
-        permissions: { administration: "write" },
-      }),
-    },
-  );
-  if (!tokenResponse.ok) throw new Error("GitHub App token creation failed");
-  const result = await readBoundedJson<InstallationToken>(tokenResponse);
-  if (typeof result.token !== "string" || result.token.length === 0) {
-    throw new Error("Invalid GitHub App token response");
-  }
-  return result.token;
-}
-
-async function isCollaborator(owner: string, repo: string, login: string, token: string): Promise<boolean> {
-  const response = await githubRequest(
-    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/collaborators/${encodeURIComponent(login)}`,
-    token,
-  );
-  if (response.status === 204) return true;
-  if (response.status === 404) return false;
-  throw new Error("GitHub collaborator check failed");
-}
-
-async function updateStatus(env: Env, login: string, status: "invited" | "active"): Promise<void> {
-  const timestampColumn = status === "active" ? "active_at" : "invited_at";
   const result = await env.DB.prepare(
     `UPDATE access_requests
-     SET access_status = ?2,
+     SET access_status = 'active',
          approved_at = COALESCE(approved_at, CURRENT_TIMESTAMP),
-         invited_at = COALESCE(invited_at, CURRENT_TIMESTAMP),
-         ${timestampColumn} = COALESCE(${timestampColumn}, CURRENT_TIMESTAMP),
+         active_at = COALESCE(active_at, CURRENT_TIMESTAMP),
          revoked_at = NULL,
          updated_at = CURRENT_TIMESTAMP
      WHERE github_login = ?1 COLLATE NOCASE
        AND platform IN ('macos', 'linux', 'both')
-       AND access_status IN ('pending', 'invited')`,
-  )
-    .bind(login, status)
-    .run();
-  if (!result.success || result.meta.changes !== 1) throw new Error("Access status update failed");
+       AND access_status = 'pending'`,
+  ).bind(login).run();
+  if (!result.success || result.meta.changes !== 1) throw new HttpError(404, "Pending request not found");
+  console.log(JSON.stringify({ event: "preview_access_activated" }));
 }
 
-async function approve(env: Env, requestedLogin: string): Promise<"invited" | "active"> {
-  const login = requestedLogin.replace(/^@/, "");
-  if (!githubLoginPattern.test(login)) throw new HttpError(400, "Invalid GitHub username");
-
-  const request = await findRequest(env, login);
-  if (!request) throw new HttpError(404, "Pending request not found");
-
-  const { owner, repo } = parseRepository(env.RELEASES_REPO);
-  const token = await installationToken(env, owner, repo);
-  let active = await isCollaborator(owner, repo, request.github_login, token);
-  if (!active) {
-    const inviteResponse = await githubRequest(
-      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/collaborators/${encodeURIComponent(request.github_login)}`,
-      token,
-      { method: "PUT", body: JSON.stringify({ permission: "pull" }) },
-    );
-    if (inviteResponse.status !== 201 && inviteResponse.status !== 204) {
-      throw new Error(`GitHub invitation failed (${inviteResponse.status}): ${await githubErrorMessage(inviteResponse)}`);
-    }
-    active = await isCollaborator(owner, repo, request.github_login, token);
-  }
-
-  const status = active ? "active" : "invited";
-  await updateStatus(env, request.github_login, status);
-  console.log(JSON.stringify({ event: "preview_access_updated", status }));
-  return status;
-}
-
-function page(requests: AccessRequest[], message?: string): Response {
-  const rows = requests
-    .map((request) => {
-      const login = escapeHtml(request.github_login);
-      const action = request.access_status === "pending" ? "Approve" : "Check access";
-      return `<li><div><strong>@${login}</strong><small>${escapeHtml(request.platform)} · ${escapeHtml(request.access_status)}</small></div><form method="post" action="/approve"><input type="hidden" name="login" value="${login}"><button type="submit">${action}</button></form></li>`;
-    })
-    .join("");
+function adminPage(requests: AccessRequest[], message?: string): Response {
+  const rows = requests.map((request) => {
+    const login = escapeHtml(request.github_login);
+    return `<li><div><strong>@${login}</strong><small>${escapeHtml(request.platform)}</small></div><form method="post" action="/approve"><input type="hidden" name="login" value="${login}"><button type="submit">Approve</button></form></li>`;
+  }).join("");
   const content = rows || "<li class=empty>No requests need attention.</li>";
   const notice = message ? `<p class=notice>${escapeHtml(message)}</p>` : "";
   return new Response(
-    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Preview access · Struktly</title><style>:root{color-scheme:light dark;font:16px/1.5 system-ui,sans-serif}body{max-width:44rem;margin:4rem auto;padding:0 1.25rem}h1{font-size:1.75rem}p{color:#777}ul{list-style:none;padding:0;border-top:1px solid #8885}li{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:1rem 0;border-bottom:1px solid #8885}small{display:block;color:#777}button{font:inherit;font-weight:650;padding:.55rem .9rem;border:0;border-radius:.45rem;background:#5b5cf0;color:white;cursor:pointer}.notice{padding:.8rem 1rem;border-radius:.45rem;background:#26834a22;color:inherit}.empty{color:#777}</style></head><body><main><h1>Preview access</h1><p>Approve read-only access to private release builds.</p>${notice}<ul>${content}</ul></main></body></html>`,
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Preview access · Struktly</title><style>:root{color-scheme:light dark;font:16px/1.5 system-ui,sans-serif}body{max-width:44rem;margin:4rem auto;padding:0 1.25rem}h1{font-size:1.75rem}p{color:#777}ul{list-style:none;padding:0;border-top:1px solid #8885}li{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:1rem 0;border-bottom:1px solid #8885}small{display:block;color:#777}button{font:inherit;font-weight:650;padding:.55rem .9rem;border:0;border-radius:.45rem;background:#5b5cf0;color:white;cursor:pointer}.notice{padding:.8rem 1rem;border-radius:.45rem;background:#26834a22;color:inherit}.empty{color:#777}</style></head><body><main><h1>Preview access</h1><p>Approve download access to private release builds.</p>${notice}<ul>${content}</ul></main></body></html>`,
     { headers: secureHeaders("text/html; charset=utf-8") },
   );
 }
 
-async function handle(request: Request, env: Env): Promise<Response> {
+async function releaseManifest(env: Env) {
+  const object = await env.RELEASES.get("latest.json");
+  if (!object) throw new HttpError(503, "No preview release is available");
+  if (object.size > 128_000) throw new Error("Release manifest is unexpectedly large");
+  try {
+    return parseReleaseManifest(JSON.parse(await object.text()));
+  } catch {
+    throw new Error("Release manifest is invalid");
+  }
+}
+
+function downloadsPage(manifest: Awaited<ReturnType<typeof releaseManifest>>): Response {
+  const assets = manifest.assets
+    .map((asset) => `<li><strong>${escapeHtml(asset.name)}</strong><a href="/download/${encodeURIComponent(asset.id)}">Download</a></li>`)
+    .join("");
+  return new Response(
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Preview downloads · Struktly</title><style>:root{color-scheme:light dark;font:16px/1.5 system-ui,sans-serif}body{max-width:44rem;margin:4rem auto;padding:0 1.25rem}h1{font-size:1.75rem}p{color:#777}ul{list-style:none;padding:0;border-top:1px solid #8885}li{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:1rem 0;border-bottom:1px solid #8885}a{font-weight:650}</style></head><body><main><h1>Preview downloads</h1><p>${escapeHtml(manifest.tag)}</p><ul>${assets}</ul></main></body></html>`,
+    { headers: secureHeaders("text/html; charset=utf-8") },
+  );
+}
+
+async function handleDownloads(request: Request, env: Env, url: URL): Promise<Response> {
+  await requireApprovedDownloader(request, env);
+  const manifest = await releaseManifest(env);
+  if (request.method === "GET" && url.pathname === "/") return downloadsPage(manifest);
+
+  const match = /^\/download\/([^/]+)$/.exec(url.pathname);
+  if (request.method !== "GET" || !match) {
+    return new Response("Not found", { status: 404, headers: secureHeaders("text/plain; charset=utf-8") });
+  }
+  const asset = manifest.assets.find((candidate) => candidate.id === decodeURIComponent(match[1]));
+  if (!asset) return new Response("Not found", { status: 404, headers: secureHeaders("text/plain; charset=utf-8") });
+
+  const object = await env.RELEASES.get(asset.key);
+  if (!object) throw new Error("Published release asset is missing");
+  const headers = new Headers(secureHeaders(object.httpMetadata?.contentType ?? "application/octet-stream"));
+  headers.set("Content-Disposition", `attachment; filename="${asset.name}"`);
+  headers.set("Content-Length", String(object.size));
+  return new Response(object.body, { headers });
+}
+
+async function handleAdmin(request: Request, env: Env, url: URL): Promise<Response> {
   await requireAdmin(request, env);
-  const url = new URL(request.url);
-  if (request.method === "GET" && url.pathname === "/") return page(await listRequests(env));
+  if (request.method === "GET" && url.pathname === "/") return adminPage(await listRequests(env));
 
   if (request.method === "POST" && url.pathname === "/approve") {
     if (!hasPreviewAccessOrigin(request)) throw new HttpError(403, "Invalid request origin");
@@ -237,9 +170,8 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const form = await request.formData();
     const login = form.get("login");
     if (typeof login !== "string") throw new HttpError(400, "GitHub username is required");
-    const status = await approve(env, login);
-    const message = status === "active" ? "Access is active." : "Invitation sent. The tester must accept it on GitHub.";
-    return page(await listRequests(env), message);
+    await activateRequest(env, login);
+    return adminPage(await listRequests(env), "Download access is active.");
   }
 
   return new Response("Not found", { status: 404, headers: secureHeaders("text/plain; charset=utf-8") });
@@ -248,7 +180,10 @@ async function handle(request: Request, env: Env): Promise<Response> {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
-      return await handle(request, env);
+      const url = new URL(request.url);
+      return url.hostname === downloadsHostname
+        ? await handleDownloads(request, env, url)
+        : await handleAdmin(request, env, url);
     } catch (error) {
       const status = error instanceof HttpError ? error.status : 500;
       if (status === 500) {

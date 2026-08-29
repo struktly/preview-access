@@ -3,7 +3,7 @@ import {
   escapeHtml,
   githubLoginPattern,
   hasPreviewAccessOrigin,
-  parseRepository,
+  parseReleaseManifest,
   previewAccessOrigin,
 } from "../src/core.js";
 
@@ -15,9 +15,29 @@ describe("public input boundaries", () => {
     expect(githubLoginPattern.test("invalid/user")).toBe(false);
   });
 
-  it("requires an owner/repository pair", () => {
-    expect(parseRepository("struktly/releases")).toEqual({ owner: "struktly", repo: "releases" });
-    expect(() => parseRepository("releases")).toThrow("Invalid release repository configuration");
+  it("accepts a manifest that cannot address arbitrary R2 objects", () => {
+    expect(parseReleaseManifest({
+      version: 1,
+      tag: "v0.1.35",
+      assets: [{
+        id: "macos-arm64",
+        name: "Struktly_0.1.35_aarch64.dmg",
+        key: "releases/v0.1.35/Struktly_0.1.35_aarch64.dmg",
+      }],
+    })).toEqual({
+      version: 1,
+      tag: "v0.1.35",
+      assets: [{
+        id: "macos-arm64",
+        name: "Struktly_0.1.35_aarch64.dmg",
+        key: "releases/v0.1.35/Struktly_0.1.35_aarch64.dmg",
+      }],
+    });
+    expect(() => parseReleaseManifest({
+      version: 1,
+      tag: "v0.1.35",
+      assets: [{ id: "anything", name: "release.dmg", key: "private/secret" }],
+    })).toThrow("Invalid release manifest");
   });
 
   it("escapes every HTML-significant character", () => {

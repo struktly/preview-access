@@ -1,4 +1,2 @@
 ADMIN_EMAIL=admin@example.com
-GITHUB_APP_ID=123456
-GITHUB_APP_PRIVATE_KEY=replace-with-a-pem-private-key
-RELEASES_REPO=owner/repository
+DOWNLOADS_ACCESS_AUD=test-downloads-audience
