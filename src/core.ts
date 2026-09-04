@@ -1,11 +1,17 @@
 export const githubLoginPattern = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
 export const previewAccessOrigin = "https://preview-access.struktly.app";
+export const downloadsOrigin = "https://downloads.struktly.app";
+// 32 random bytes, base64url without padding.
+export const claimTokenPattern = /^[A-Za-z0-9_-]{43}$/;
 const releaseTagPattern = /^v\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/;
 const releaseAssetIdPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const releaseAssetNamePattern = /^[A-Za-z0-9][A-Za-z0-9._ -]{0,255}$/;
 const releaseAssetKeyPattern = /^releases\/v\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?\/[A-Za-z0-9][A-Za-z0-9._ -]{0,255}$/;
+// Escaped before it renders; this only keeps control characters out of the page.
+const releaseAssetLabelPattern = /^[^\u0000-\u001f\u007f]{1,64}$/;
 
-export type ReleaseAsset = { id: string; key: string; name: string };
+// `label` is optional so a manifest published before labelling still parses.
+export type ReleaseAsset = { id: string; key: string; name: string; label?: string };
 export type ReleaseManifest = { version: 1; tag: string; assets: ReleaseAsset[] };
 
 export function hasPreviewAccessOrigin(request: Request): boolean {
@@ -59,10 +65,97 @@ export function parseReleaseManifest(value: unknown): ReleaseManifest {
     ) {
       throw new Error("Invalid release manifest");
     }
-    return { id: candidate.id, key: candidate.key, name: candidate.name };
+    if (candidate.label !== undefined &&
+        (typeof candidate.label !== "string" || !releaseAssetLabelPattern.test(candidate.label))) {
+      throw new Error("Invalid release manifest");
+    }
+    return { id: candidate.id, key: candidate.key, name: candidate.name, ...(candidate.label ? { label: candidate.label } : {}) };
   });
   if (new Set(assets.map((asset) => asset.id)).size !== assets.length) {
     throw new Error("Invalid release manifest");
   }
   return { version: 1, tag: manifest.tag, assets };
 }
+
+export function newClaimToken(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/** Only the hash reaches D1, so a leaked row cannot be replayed as a claim. */
+export async function claimTokenHash(token: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export function claimUrl(token: string): string {
+  return `${downloadsOrigin}/claim?t=${encodeURIComponent(token)}`;
+}
+
+/** The one transactional mail this service sends. Carries no request detail. */
+export function approvalEmail(token: string): { subject: string; text: string; html: string } {
+  const link = claimUrl(token);
+  return {
+    subject: "Your Struktly preview access is approved",
+    text: [
+      "Your request for Struktly preview access is approved.",
+      "",
+      `Open this link to verify yourself and reach the builds:`,
+      link,
+      "",
+      "Cloudflare Access will ask you to sign in first. Use a one-time PIN sent",
+      "to this address, or sign in with GitHub -- either proves who you are, and",
+      "the link binds that sign-in to your approval.",
+      "",
+      "The link works once and expires in 14 days. After that, downloads stay at",
+      downloadsOrigin,
+      "",
+      "-- Struktly",
+    ].join("\n"),
+    html: [
+      '<!doctype html><html lang="en"><body style="font:16px/1.6 system-ui,sans-serif;color:#111;max-width:34rem;margin:0 auto;padding:1.5rem">',
+      "<p>Your request for Struktly preview access is approved.</p>",
+      `<p><a href="${escapeHtml(link)}" style="font-weight:650">Verify yourself and open the preview builds</a></p>`,
+      "<p>Cloudflare Access will ask you to sign in first. Use a one-time PIN sent to this address, or sign in with GitHub &mdash; either proves who you are, and the link binds that sign-in to your approval.</p>",
+      `<p>The link works once and expires in 14 days. After that, downloads stay at <a href="${downloadsOrigin}">${downloadsOrigin}</a>.</p>`,
+      "<p>&mdash; Struktly</p>",
+      "</body></html>",
+    ].join(""),
+  };
+}
+
+// The statements the download gate turns on, kept here so the D1 test drives the
+// exact text the Worker runs rather than a copy of it. `datetime('now', ...)`
+// writes the expiry in the format CURRENT_TIMESTAMP compares against.
+export const activeDownloaderQuery = `SELECT 1
+   FROM access_requests
+   WHERE (email = ?1 COLLATE NOCASE OR claimed_email = ?1 COLLATE NOCASE)
+     AND access_status = 'active'
+     AND platform IN ('macos', 'linux', 'both')
+   LIMIT 1`;
+
+export const activateRequestStatement = `UPDATE access_requests
+   SET access_status = 'active',
+       approved_at = COALESCE(approved_at, CURRENT_TIMESTAMP),
+       active_at = COALESCE(active_at, CURRENT_TIMESTAMP),
+       revoked_at = NULL,
+       claim_token_hash = ?2,
+       claim_expires_at = datetime('now', '+14 days'),
+       claimed_email = NULL,
+       claimed_at = NULL,
+       updated_at = CURRENT_TIMESTAMP
+   WHERE github_login = ?1 COLLATE NOCASE
+     AND platform IN ('macos', 'linux', 'both')
+     AND access_status = 'pending'
+   RETURNING email`;
+
+export const redeemClaimStatement = `UPDATE access_requests
+   SET claimed_email = ?2,
+       claimed_at = CURRENT_TIMESTAMP,
+       claim_token_hash = NULL,
+       claim_expires_at = NULL,
+       updated_at = CURRENT_TIMESTAMP
+   WHERE claim_token_hash = ?1
+     AND access_status = 'active'
+     AND claim_expires_at > CURRENT_TIMESTAMP
+   RETURNING 1 AS claimed`;

@@ -1,0 +1,69 @@
+name: Deploy
+
+# Deploying used to mean running `make deploy-preview-access` from the private
+# infrastructure repository, so main could sit undeployed for as long as nobody
+# remembered. This runs the same deploy on every push to main.
+#
+# CLOUDFLARE_API_TOKEN is the Worker-upload-only token minted by the
+# cloudflare-preview-access OpenTofu root and published here by github-platform.
+# It cannot read D1, write R2, or touch Access policy.
+#
+# The Worker's own secrets are not here. `wrangler deploy` preserves them, so
+# ADMIN_EMAIL and DOWNLOADS_ACCESS_AUD stay owned by the infrastructure repo and
+# the founder's address never becomes a public repository's Actions secret. That
+# also means the first deploy of a new Worker has to be the local one; the
+# preflight below refuses to publish a Worker that would deny everybody.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-preview-access
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      # checks.yml runs on the same push, but as a separate workflow it cannot
+      # gate this one. Deploying is cheap; publishing an untested Worker is not.
+      - run: npm run check
+
+      - name: Prove the Worker's secrets are seeded
+        run: |
+          set -eu
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+            echo "CLOUDFLARE_API_TOKEN is unset. Apply the cloudflare-preview-access and" >&2
+            echo "github-platform OpenTofu roots to publish it." >&2
+            exit 1
+          fi
+          if ! seeded=$(npx wrangler secret list --format json); then
+            echo "Could not read the Worker's secrets. If this Worker has never been" >&2
+            echo "deployed, seed it once with 'make deploy-preview-access' in" >&2
+            echo "struktly/infrastructure, then re-run this workflow." >&2
+            exit 1
+          fi
+          for name in ADMIN_EMAIL DOWNLOADS_ACCESS_AUD; do
+            if ! printf '%s' "$seeded" | grep -q "\"$name\""; then
+              echo "Worker secret $name is not set; deploying now would deny every" >&2
+              echo "request. Run 'make deploy-preview-access' in struktly/infrastructure." >&2
+              exit 1
+            fi
+          done
+
+      - run: npm run deploy

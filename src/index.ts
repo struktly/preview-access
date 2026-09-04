@@ -1,12 +1,20 @@
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import {
+  activateRequestStatement,
+  activeDownloaderQuery,
+  approvalEmail,
+  claimTokenHash,
+  claimTokenPattern,
+  downloadsOrigin,
   escapeHtml,
   githubLoginPattern,
   hasPreviewAccessOrigin,
+  newClaimToken,
   parseReleaseManifest,
+  redeemClaimStatement,
 } from "./core.js";
 
-const downloadsHostname = "downloads.struktly.app";
+const downloadsHostname = new URL(downloadsOrigin).hostname;
 
 type AccessRequest = {
   github_login: string;
@@ -61,14 +69,7 @@ async function requireAdmin(request: Request, env: Env): Promise<void> {
 
 async function requireApprovedDownloader(request: Request, env: Env): Promise<void> {
   const email = await requireAccess(request, env, env.DOWNLOADS_ACCESS_AUD);
-  const result = await env.DB.prepare(
-    `SELECT 1
-     FROM access_requests
-     WHERE email = ?1 COLLATE NOCASE
-       AND access_status = 'active'
-       AND platform IN ('macos', 'linux', 'both')
-     LIMIT 1`,
-  ).bind(email).first();
+  const result = await env.DB.prepare(activeDownloaderQuery).bind(email).first();
   if (!result) throw new HttpError(403, "Preview access is not active");
 }
 
@@ -84,23 +85,55 @@ async function listRequests(env: Env): Promise<AccessRequest[]> {
   return result.results;
 }
 
-async function activateRequest(env: Env, requestedLogin: string): Promise<void> {
+/** Activates the request and returns the address to notify with its claim token. */
+async function activateRequest(env: Env, requestedLogin: string): Promise<{ email: string; token: string }> {
   const login = requestedLogin.replace(/^@/, "");
   if (!githubLoginPattern.test(login)) throw new HttpError(400, "Invalid GitHub username");
 
-  const result = await env.DB.prepare(
-    `UPDATE access_requests
-     SET access_status = 'active',
-         approved_at = COALESCE(approved_at, CURRENT_TIMESTAMP),
-         active_at = COALESCE(active_at, CURRENT_TIMESTAMP),
-         revoked_at = NULL,
-         updated_at = CURRENT_TIMESTAMP
-     WHERE github_login = ?1 COLLATE NOCASE
-       AND platform IN ('macos', 'linux', 'both')
-       AND access_status = 'pending'`,
-  ).bind(login).run();
-  if (!result.success || result.meta.changes !== 1) throw new HttpError(404, "Pending request not found");
+  const token = newClaimToken();
+  const activated = await env.DB.prepare(activateRequestStatement)
+    .bind(login, await claimTokenHash(token))
+    .first<{ email: string }>();
+  if (!activated) throw new HttpError(404, "Pending request not found");
   console.log(JSON.stringify({ event: "preview_access_activated" }));
+  return { email: activated.email, token };
+}
+
+/** The row is already committed, so a bounce must never undo an approval. */
+async function sendApproval(env: Env, email: string, token: string): Promise<boolean> {
+  const message = approvalEmail(token);
+  try {
+    await env.EMAIL.send({
+      to: email,
+      from: { email: env.NOTIFICATION_FROM, name: "Struktly" },
+      subject: message.subject,
+      text: message.text,
+      html: message.html,
+    });
+    console.log(JSON.stringify({ event: "preview_access_email_sent" }));
+    return true;
+  } catch {
+    console.error(JSON.stringify({ event: "preview_access_email_failed" }));
+    return false;
+  }
+}
+
+/** Binds the signed-in Access identity to an approval, whichever provider it came from. */
+async function claimAccess(request: Request, env: Env, url: URL): Promise<Response> {
+  const email = await requireAccess(request, env, env.DOWNLOADS_ACCESS_AUD);
+  const token = url.searchParams.get("t") ?? "";
+  if (!claimTokenPattern.test(token)) throw new HttpError(400, "This verification link is not valid");
+
+  const claimed = await env.DB.prepare(redeemClaimStatement)
+    .bind(await claimTokenHash(token), email)
+    .first();
+  if (!claimed) throw new HttpError(403, "This verification link has expired or was already used");
+
+  console.log(JSON.stringify({ event: "preview_access_claimed" }));
+  return new Response(null, {
+    status: 303,
+    headers: { ...secureHeaders("text/plain; charset=utf-8"), Location: `${downloadsOrigin}/` },
+  });
 }
 
 function adminPage(requests: AccessRequest[], message?: string): Response {
@@ -129,15 +162,21 @@ async function releaseManifest(env: Env) {
 
 function downloadsPage(manifest: Awaited<ReturnType<typeof releaseManifest>>): Response {
   const assets = manifest.assets
-    .map((asset) => `<li><strong>${escapeHtml(asset.name)}</strong><a href="/download/${encodeURIComponent(asset.id)}">Download</a></li>`)
+    .map((asset) => {
+      const heading = escapeHtml(asset.label ?? asset.name);
+      const detail = asset.label ? `<small>${escapeHtml(asset.name)}</small>` : "";
+      return `<li><div><strong>${heading}</strong>${detail}</div><a href="/download/${encodeURIComponent(asset.id)}">Download</a></li>`;
+    })
     .join("");
   return new Response(
-    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Preview downloads · Struktly</title><style>:root{color-scheme:light dark;font:16px/1.5 system-ui,sans-serif}body{max-width:44rem;margin:4rem auto;padding:0 1.25rem}h1{font-size:1.75rem}p{color:#777}ul{list-style:none;padding:0;border-top:1px solid #8885}li{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:1rem 0;border-bottom:1px solid #8885}a{font-weight:650}</style></head><body><main><h1>Preview downloads</h1><p>${escapeHtml(manifest.tag)}</p><ul>${assets}</ul></main></body></html>`,
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Preview downloads · Struktly</title><style>:root{color-scheme:light dark;font:16px/1.5 system-ui,sans-serif}body{max-width:44rem;margin:4rem auto;padding:0 1.25rem}h1{font-size:1.75rem}p{color:#777}ul{list-style:none;padding:0;border-top:1px solid #8885}li{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:1rem 0;border-bottom:1px solid #8885}small{display:block;color:#777}a{font-weight:650}</style></head><body><main><h1>Preview downloads</h1><p>${escapeHtml(manifest.tag)}</p><ul>${assets}</ul></main></body></html>`,
     { headers: secureHeaders("text/html; charset=utf-8") },
   );
 }
 
 async function handleDownloads(request: Request, env: Env, url: URL): Promise<Response> {
+  if (request.method === "GET" && url.pathname === "/claim") return claimAccess(request, env, url);
+
   await requireApprovedDownloader(request, env);
   const manifest = await releaseManifest(env);
   if (request.method === "GET" && url.pathname === "/") return downloadsPage(manifest);
@@ -170,8 +209,14 @@ async function handleAdmin(request: Request, env: Env, url: URL): Promise<Respon
     const form = await request.formData();
     const login = form.get("login");
     if (typeof login !== "string") throw new HttpError(400, "GitHub username is required");
-    await activateRequest(env, login);
-    return adminPage(await listRequests(env), "Download access is active.");
+    const activated = await activateRequest(env, login);
+    const notified = await sendApproval(env, activated.email, activated.token);
+    return adminPage(
+      await listRequests(env),
+      notified
+        ? "Download access is active and the approval email is on its way."
+        : "Download access is active, but the approval email could not be sent.",
+    );
   }
 
   return new Response("Not found", { status: 404, headers: secureHeaders("text/plain; charset=utf-8") });
