@@ -45,6 +45,33 @@ export function escapeHtml(value: string): string {
   });
 }
 
+/** Why this row cannot be offered, or null when it can. */
+function assetFault(value: unknown, tag: string, seen: Set<string>): string | null {
+  if (!value || typeof value !== "object") return "not an object";
+  const asset = value as Partial<ReleaseAsset>;
+  if (typeof asset.id !== "string" || !releaseAssetIdPattern.test(asset.id)) return "unusable id";
+  if (typeof asset.name !== "string" || !releaseAssetNamePattern.test(asset.name)) {
+    return `unusable name for ${asset.id}`;
+  }
+  if (
+    typeof asset.key !== "string" || !releaseAssetKeyPattern.test(asset.key) ||
+    asset.key !== `releases/${tag}/${asset.name}`
+  ) {
+    return `key does not address this release for ${asset.id}`;
+  }
+  if (asset.label !== undefined &&
+      (typeof asset.label !== "string" || !releaseAssetLabelPattern.test(asset.label))) {
+    return `unusable label for ${asset.id}`;
+  }
+  if (seen.has(asset.id)) return `duplicate id ${asset.id}`;
+  return null;
+}
+
+/**
+ * One unpublishable row must not close the download page on every approved
+ * tester, so a bad asset is dropped and reported to the log. A manifest whose
+ * rows are all unusable is still invalid — there is nothing to offer.
+ */
 export function parseReleaseManifest(value: unknown): ReleaseManifest {
   if (!value || typeof value !== "object") throw new Error("Invalid release manifest");
   const manifest = value as Partial<ReleaseManifest>;
@@ -54,27 +81,21 @@ export function parseReleaseManifest(value: unknown): ReleaseManifest {
   if (!Array.isArray(manifest.assets) || manifest.assets.length === 0) {
     throw new Error("Invalid release manifest");
   }
-  const assets = manifest.assets.map((asset) => {
-    if (!asset || typeof asset !== "object") throw new Error("Invalid release manifest");
-    const candidate = asset as Partial<ReleaseAsset>;
-    if (
-      typeof candidate.id !== "string" || !releaseAssetIdPattern.test(candidate.id) ||
-      typeof candidate.name !== "string" || !releaseAssetNamePattern.test(candidate.name) ||
-      typeof candidate.key !== "string" || !releaseAssetKeyPattern.test(candidate.key) ||
-      candidate.key !== `releases/${manifest.tag}/${candidate.name}`
-    ) {
-      throw new Error("Invalid release manifest");
+  const tag = manifest.tag;
+  const seen = new Set<string>();
+  const assets: ReleaseAsset[] = [];
+  for (const candidate of manifest.assets) {
+    const fault = assetFault(candidate, tag, seen);
+    if (fault !== null) {
+      console.warn(`Release manifest ${tag}: skipped an asset (${fault})`);
+      continue;
     }
-    if (candidate.label !== undefined &&
-        (typeof candidate.label !== "string" || !releaseAssetLabelPattern.test(candidate.label))) {
-      throw new Error("Invalid release manifest");
-    }
-    return { id: candidate.id, key: candidate.key, name: candidate.name, ...(candidate.label ? { label: candidate.label } : {}) };
-  });
-  if (new Set(assets.map((asset) => asset.id)).size !== assets.length) {
-    throw new Error("Invalid release manifest");
+    const asset = candidate as ReleaseAsset;
+    seen.add(asset.id);
+    assets.push({ id: asset.id, key: asset.key, name: asset.name, ...(asset.label ? { label: asset.label } : {}) });
   }
-  return { version: 1, tag: manifest.tag, assets };
+  if (assets.length === 0) throw new Error("Invalid release manifest");
+  return { version: 1, tag, assets };
 }
 
 export function newClaimToken(): string {

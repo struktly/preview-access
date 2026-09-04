@@ -67,6 +67,38 @@ describe("public input boundaries", () => {
     })).toThrow("Invalid release manifest");
   });
 
+  it("drops one unusable asset instead of closing the page on every tester", () => {
+    const warnings: unknown[] = [];
+    const warn = console.warn;
+    console.warn = (...args: unknown[]) => { warnings.push(args[0]); };
+    try {
+      expect(parseReleaseManifest({
+        version: 1,
+        tag: "v0.1.35",
+        assets: [
+          // A publisher that put the file name in the id: legal as a name, not as an id.
+          {
+            id: "Struktly 0.1.35 aarch64.dmg",
+            name: "Struktly 0.1.35 aarch64.dmg",
+            key: "releases/v0.1.35/Struktly 0.1.35 aarch64.dmg",
+          },
+          {
+            id: "Struktly_0.1.35_amd64.deb",
+            name: "Struktly_0.1.35_amd64.deb",
+            key: "releases/v0.1.35/Struktly_0.1.35_amd64.deb",
+          },
+        ],
+      }).assets).toEqual([{
+        id: "Struktly_0.1.35_amd64.deb",
+        name: "Struktly_0.1.35_amd64.deb",
+        key: "releases/v0.1.35/Struktly_0.1.35_amd64.deb",
+      }]);
+    } finally {
+      console.warn = warn;
+    }
+    expect(warnings).toEqual(["Release manifest v0.1.35: skipped an asset (unusable id)"]);
+  });
+
   it("escapes every HTML-significant character", () => {
     expect(escapeHtml(`<a href='x'>&"`)).toBe("&lt;a href=&#39;x&#39;&gt;&amp;&quot;");
   });
