@@ -1,0 +1,42 @@
+# Daily stale sweep. The webhook runtimes only see a pull request when
+# something happens to it; a pull request going quiet is the absence of an
+# event, so the sweep has to be scheduled.
+name: Tidebot stale sweep
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          repository: fridthjof-labs/tidebot
+          ref: v0.4.1 # x-release-please-version
+          path: .tidebot
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          package_json_file: .tidebot/package.json
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: .tidebot/pnpm-lock.yaml
+
+      - working-directory: .tidebot
+        run: pnpm install --frozen-lockfile
+
+      - working-directory: .tidebot
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: pnpm exec tsx src/cli/index.ts stale-sweep --repo "$GITHUB_REPOSITORY"
