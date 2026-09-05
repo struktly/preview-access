@@ -145,11 +145,21 @@ describe("claiming an approval", () => {
     expect(await revoke()).toBeNull();
     expect(await decline()).not.toBeNull();
     expect(await decline()).toBeNull();
-    expect(
-      await env.DB.prepare(activateRequestStatement)
-        .bind("octocat", await claimTokenHash(newClaimToken()))
-        .first(),
-    ).toBeNull();
     expect(await mayDownload(REQUESTED)).toBeNull();
+  });
+
+  it("lets a declined or removed decision be reversed, on a fresh link only", async () => {
+    await decline();
+    const first = await approve();
+    expect(await mayDownload(REQUESTED)).not.toBeNull();
+
+    await redeem(first);
+    await revoke();
+    const second = await approve();
+
+    expect(await redeem(first)).toBeNull();
+    expect(await mayDownload(GITHUB_IDENTITY)).toBeNull();
+    expect(await redeem(second)).not.toBeNull();
+    expect(await mayDownload(GITHUB_IDENTITY)).not.toBeNull();
   });
 });

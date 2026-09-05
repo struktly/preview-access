@@ -167,7 +167,7 @@ export const activateRequestStatement = `UPDATE access_requests
        updated_at = CURRENT_TIMESTAMP
    WHERE github_login = ?1 COLLATE NOCASE
      AND platform IN ('macos', 'linux', 'both')
-     AND access_status = 'pending'
+     AND access_status IN ('pending', 'declined', 'revoked')
    RETURNING email`;
 
 export const redeemClaimStatement = `UPDATE access_requests
