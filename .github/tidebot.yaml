@@ -1,7 +1,6 @@
-# Repository-specific policy for Tidebot, served by the hosted Worker (the
-# Tidebot GitHub App installed on this repository). No workflow runs here.
-# built-in default, and this repository's file is merged over any defaults in
-# the organisation's `.github` repository.
+# Tidebot policy for this repository, read by the hosted Tidebot Worker through
+# the Tidebot GitHub App installed here. Nothing runs in Actions for it. Every
+# key is optional: what is not set keeps the built-in default.
 #
 # Reference: https://github.com/fridthjof-labs/tidebot/blob/main/docs/config.md
 
