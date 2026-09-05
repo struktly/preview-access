@@ -180,3 +180,23 @@ export const redeemClaimStatement = `UPDATE access_requests
      AND access_status = 'active'
      AND claim_expires_at > CURRENT_TIMESTAMP
    RETURNING 1 AS claimed`;
+
+export const declineRequestStatement = `UPDATE access_requests
+   SET access_status = 'declined',
+       updated_at = CURRENT_TIMESTAMP
+   WHERE github_login = ?1 COLLATE NOCASE
+     AND access_status = 'pending'
+   RETURNING 1 AS declined`;
+
+// The claim token goes with the access: an unredeemed link must not bind an
+// identity to an approval that no longer exists. `claimed_email` stays as the
+// record of who used it.
+export const revokeAccessStatement = `UPDATE access_requests
+   SET access_status = 'revoked',
+       revoked_at = CURRENT_TIMESTAMP,
+       claim_token_hash = NULL,
+       claim_expires_at = NULL,
+       updated_at = CURRENT_TIMESTAMP
+   WHERE github_login = ?1 COLLATE NOCASE
+     AND access_status = 'active'
+   RETURNING 1 AS revoked`;

@@ -4,8 +4,10 @@ import {
   activateRequestStatement,
   activeDownloaderQuery,
   claimTokenHash,
+  declineRequestStatement,
   newClaimToken,
   redeemClaimStatement,
+  revokeAccessStatement,
 } from "../src/core.js";
 
 // The Worker binds a database the website repository migrates, so the schema
@@ -67,6 +69,14 @@ function redeem(token: string, identity = GITHUB_IDENTITY) {
 
 function mayDownload(identity: string) {
   return env.DB.prepare(activeDownloaderQuery).bind(identity).first();
+}
+
+function decline(login = "octocat") {
+  return env.DB.prepare(declineRequestStatement).bind(login).first();
+}
+
+function revoke(login = "octocat") {
+  return env.DB.prepare(revokeAccessStatement).bind(login).first();
 }
 
 describe("claiming an approval", () => {
@@ -132,12 +142,32 @@ describe("claiming an approval", () => {
     expect(await redeem(second)).toBeNull();
   });
 
-  it("keeps a revoked approval out of the gate after it was claimed", async () => {
+  it("keeps a removed approval out of the gate after it was claimed", async () => {
     const token = await approve();
     await redeem(token);
-    await env.DB.prepare("UPDATE access_requests SET access_status = 'revoked'").run();
+    expect(await revoke()).not.toBeNull();
 
     expect(await mayDownload(GITHUB_IDENTITY)).toBeNull();
+    expect(await mayDownload(REQUESTED)).toBeNull();
+  });
+
+  it("kills an unredeemed claim link when access is removed", async () => {
+    const token = await approve();
+    expect(await revoke()).not.toBeNull();
+
+    expect(await redeem(token)).toBeNull();
+    expect(await mayDownload(GITHUB_IDENTITY)).toBeNull();
+  });
+
+  it("removes only active access, and declines only a pending request", async () => {
+    expect(await revoke()).toBeNull();
+    expect(await decline()).not.toBeNull();
+    expect(await decline()).toBeNull();
+    expect(
+      await env.DB.prepare(activateRequestStatement)
+        .bind("octocat", await claimTokenHash(newClaimToken()))
+        .first(),
+    ).toBeNull();
     expect(await mayDownload(REQUESTED)).toBeNull();
   });
 });
