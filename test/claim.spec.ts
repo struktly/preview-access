@@ -6,6 +6,7 @@ import {
   claimTokenHash,
   declineRequestStatement,
   newClaimToken,
+  recordDownloadStatement,
   redeemClaimStatement,
   revokeAccessStatement,
 } from "../src/core.js";
@@ -49,6 +50,15 @@ const INDEXES = [
     WHERE claimed_email IS NOT NULL`,
 ];
 
+const DOWNLOADS_SCHEMA = `
+  CREATE TABLE downloads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    identity TEXT NOT NULL COLLATE NOCASE,
+    release_tag TEXT NOT NULL,
+    asset_id TEXT NOT NULL,
+    downloaded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`;
+
 const REQUESTED = "tester@work.example";
 const GITHUB_IDENTITY = "tester@personal.example";
 
@@ -82,7 +92,8 @@ function revoke(login = "octocat") {
 describe("claiming an approval", () => {
   beforeEach(async () => {
     await env.DB.prepare("DROP TABLE IF EXISTS access_requests").run();
-    for (const statement of [SCHEMA, ...INDEXES]) {
+    await env.DB.prepare("DROP TABLE IF EXISTS downloads").run();
+    for (const statement of [SCHEMA, ...INDEXES, DOWNLOADS_SCHEMA]) {
       await env.DB.prepare(statement).run();
     }
     await env.DB.prepare(
@@ -163,11 +174,35 @@ describe("claiming an approval", () => {
     expect(await revoke()).toBeNull();
     expect(await decline()).not.toBeNull();
     expect(await decline()).toBeNull();
-    expect(
-      await env.DB.prepare(activateRequestStatement)
-        .bind("octocat", await claimTokenHash(newClaimToken()))
-        .first(),
-    ).toBeNull();
     expect(await mayDownload(REQUESTED)).toBeNull();
+  });
+
+  it("records a served asset against the identity that fetched it", async () => {
+    await env.DB.prepare(recordDownloadStatement)
+      .bind(GITHUB_IDENTITY, "v0.1.35", "Struktly_0.1.35_aarch64.dmg")
+      .run();
+    const row = await env.DB.prepare(
+      "SELECT identity, release_tag, asset_id, downloaded_at FROM downloads",
+    ).first<{ identity: string; release_tag: string; asset_id: string; downloaded_at: string }>();
+
+    expect(row?.identity).toBe(GITHUB_IDENTITY);
+    expect(row?.release_tag).toBe("v0.1.35");
+    expect(row?.asset_id).toBe("Struktly_0.1.35_aarch64.dmg");
+    expect(row?.downloaded_at).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+  });
+
+  it("lets a declined or removed decision be reversed, on a fresh link only", async () => {
+    await decline();
+    const first = await approve();
+    expect(await mayDownload(REQUESTED)).not.toBeNull();
+
+    await redeem(first);
+    await revoke();
+    const second = await approve();
+
+    expect(await redeem(first)).toBeNull();
+    expect(await mayDownload(GITHUB_IDENTITY)).toBeNull();
+    expect(await redeem(second)).not.toBeNull();
+    expect(await mayDownload(GITHUB_IDENTITY)).not.toBeNull();
   });
 });
