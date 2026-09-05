@@ -1,0 +1,58 @@
+# Tidebot policy for this repository, read by the hosted Tidebot Worker through
+# the Tidebot GitHub App installed here. Nothing runs in Actions for it. Every
+# key is optional: what is not set keeps the built-in default.
+#
+# Reference: https://github.com/fridthjof-labs/tidebot/blob/main/docs/config.md
+
+plugins:
+  size: true
+  area: true
+  commands: true
+  tide: true
+  stale: false # the hosted Worker runs no scheduled sweep
+  dependabot: false
+  autoApprove: false
+  plan: false
+  pipeline: false
+  intake: true
+
+# Which checks must pass before Tidebot merges. Leave empty and the merge gate
+# is labels only — set the names exactly as they appear in the Checks tab.
+tide:
+  mergeMethod: squash
+  requiredLabels: [lgtm, approved]
+  blockedLabels: [hold]
+  requiredContexts: [check]
+  autoRebaseWhenBehind: true
+
+commands:
+  trustedAssociations: [MEMBER, OWNER, COLLABORATOR]
+  # merge | rebase | signed-rebase — see docs/signed-rebase.md before
+  # switching to signed-rebase; it needs a workflow and a signing identity.
+  updateBranchMethod: merge
+
+# Label pull requests by the part of the tree they touch.
+area:
+  rules:
+    - prefix: .github/
+      label: area/ci
+
+
+# Declarative auto-approval. Each rule must constrain authors or paths.
+# autoApprove:
+#   rules:
+#     - name: docs
+#       paths: ['**/*.md', LICENSE, .gitignore]
+#       excludePaths: ['infra/**']
+#       requiredContexts: [check]
+#     - name: generated-content
+#       authors: ['${bot}']       # this App's own [bot] login
+#       paths: ['src/content/generated/**']
+#       requiredContexts: [check]
+
+# dependabot:
+#   enabled: true
+#   autoApprove: true
+#   requiredContexts: [check]
+#   allowMajorUpdates: false
+
