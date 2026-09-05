@@ -9,6 +9,7 @@ collaborator seats.
 
 1. Open the private page.
 2. Click **Approve**. The tester is emailed a single-use verification link.
+   **Decline** closes a request without mail; **Remove** ends active access.
 3. The tester opens that link, signs in with a one-time PIN or with GitHub, and
    gets the approved builds.
 

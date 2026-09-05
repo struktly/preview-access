@@ -5,6 +5,7 @@ import {
   approvalEmail,
   claimTokenHash,
   claimTokenPattern,
+  declineRequestStatement,
   downloadsOrigin,
   escapeHtml,
   githubLoginPattern,
@@ -12,6 +13,7 @@ import {
   newClaimToken,
   parseReleaseManifest,
   redeemClaimStatement,
+  revokeAccessStatement,
 } from "./core.js";
 
 const downloadsHostname = new URL(downloadsOrigin).hostname;
@@ -19,7 +21,7 @@ const downloadsHostname = new URL(downloadsOrigin).hostname;
 type AccessRequest = {
   github_login: string;
   platform: "macos" | "linux" | "both";
-  access_status: "pending";
+  access_status: "pending" | "active";
   created_at: string;
 };
 
@@ -79,20 +81,35 @@ async function listRequests(env: Env): Promise<AccessRequest[]> {
      FROM access_requests
      WHERE github_login IS NOT NULL
        AND platform IN ('macos', 'linux', 'both')
-       AND access_status = 'pending'
+       AND access_status IN ('pending', 'active')
      ORDER BY created_at ASC`,
   ).all<AccessRequest>();
   return result.results;
 }
 
-/** Activates the request and returns the address to notify with its claim token. */
-async function activateRequest(env: Env, requestedLogin: string): Promise<{ email: string; token: string }> {
+function validLogin(requestedLogin: string): string {
   const login = requestedLogin.replace(/^@/, "");
   if (!githubLoginPattern.test(login)) throw new HttpError(400, "Invalid GitHub username");
+  return login;
+}
 
+async function declineRequest(env: Env, requestedLogin: string): Promise<void> {
+  const declined = await env.DB.prepare(declineRequestStatement).bind(validLogin(requestedLogin)).first();
+  if (!declined) throw new HttpError(404, "Pending request not found");
+  console.log(JSON.stringify({ event: "preview_access_declined" }));
+}
+
+async function revokeAccess(env: Env, requestedLogin: string): Promise<void> {
+  const revoked = await env.DB.prepare(revokeAccessStatement).bind(validLogin(requestedLogin)).first();
+  if (!revoked) throw new HttpError(404, "Active access not found");
+  console.log(JSON.stringify({ event: "preview_access_revoked" }));
+}
+
+/** Activates the request and returns the address to notify with its claim token. */
+async function activateRequest(env: Env, requestedLogin: string): Promise<{ email: string; token: string }> {
   const token = newClaimToken();
   const activated = await env.DB.prepare(activateRequestStatement)
-    .bind(login, await claimTokenHash(token))
+    .bind(validLogin(requestedLogin), await claimTokenHash(token))
     .first<{ email: string }>();
   if (!activated) throw new HttpError(404, "Pending request not found");
   console.log(JSON.stringify({ event: "preview_access_activated" }));
@@ -136,15 +153,23 @@ async function claimAccess(request: Request, env: Env, url: URL): Promise<Respon
   });
 }
 
+function actionForm(action: string, login: string, label: string, secondary = false): string {
+  const kind = secondary ? ' class=secondary' : "";
+  return `<form method="post" action="/${action}"><input type="hidden" name="login" value="${login}"><button type="submit"${kind}>${label}</button></form>`;
+}
+
 function adminPage(requests: AccessRequest[], message?: string): Response {
   const rows = requests.map((request) => {
     const login = escapeHtml(request.github_login);
-    return `<li><div><strong>@${login}</strong><small>${escapeHtml(request.platform)}</small></div><form method="post" action="/approve"><input type="hidden" name="login" value="${login}"><button type="submit">Approve</button></form></li>`;
+    const actions = request.access_status === "pending"
+      ? actionForm("approve", login, "Approve") + actionForm("decline", login, "Decline", true)
+      : actionForm("revoke", login, "Remove", true);
+    return `<li><div><strong>@${login}</strong><small>${escapeHtml(request.platform)} · ${request.access_status}</small></div><div class=actions>${actions}</div></li>`;
   }).join("");
   const content = rows || "<li class=empty>No requests need attention.</li>";
   const notice = message ? `<p class=notice>${escapeHtml(message)}</p>` : "";
   return new Response(
-    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Preview access · Struktly</title><style>:root{color-scheme:light dark;font:16px/1.5 system-ui,sans-serif}body{max-width:44rem;margin:4rem auto;padding:0 1.25rem}h1{font-size:1.75rem}p{color:#777}ul{list-style:none;padding:0;border-top:1px solid #8885}li{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:1rem 0;border-bottom:1px solid #8885}small{display:block;color:#777}button{font:inherit;font-weight:650;padding:.55rem .9rem;border:0;border-radius:.45rem;background:#5b5cf0;color:white;cursor:pointer}.notice{padding:.8rem 1rem;border-radius:.45rem;background:#26834a22;color:inherit}.empty{color:#777}</style></head><body><main><h1>Preview access</h1><p>Approve download access to private release builds.</p>${notice}<ul>${content}</ul></main></body></html>`,
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Preview access · Struktly</title><style>:root{color-scheme:light dark;font:16px/1.5 system-ui,sans-serif}body{max-width:44rem;margin:4rem auto;padding:0 1.25rem}h1{font-size:1.75rem}p{color:#777}ul{list-style:none;padding:0;border-top:1px solid #8885}li{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:1rem 0;border-bottom:1px solid #8885}small{display:block;color:#777}.actions{display:flex;gap:.5rem}button{font:inherit;font-weight:650;padding:.55rem .9rem;border:0;border-radius:.45rem;background:#5b5cf0;color:white;cursor:pointer}.secondary{background:#8884;color:inherit}.notice{padding:.8rem 1rem;border-radius:.45rem;background:#26834a22;color:inherit}.empty{color:#777}</style></head><body><main><h1>Preview access</h1><p>Approve, decline, or remove download access to private release builds.</p>${notice}<ul>${content}</ul></main></body></html>`,
     { headers: secureHeaders("text/html; charset=utf-8") },
   );
 }
@@ -200,26 +225,36 @@ async function handleAdmin(request: Request, env: Env, url: URL): Promise<Respon
   await requireAdmin(request, env);
   if (request.method === "GET" && url.pathname === "/") return adminPage(await listRequests(env));
 
-  if (request.method === "POST" && url.pathname === "/approve") {
-    if (!hasPreviewAccessOrigin(request)) throw new HttpError(403, "Invalid request origin");
-    const contentType = request.headers.get("content-type") ?? "";
-    if (!contentType.startsWith("application/x-www-form-urlencoded")) {
-      throw new HttpError(415, "Unsupported request format");
-    }
-    const form = await request.formData();
-    const login = form.get("login");
-    if (typeof login !== "string") throw new HttpError(400, "GitHub username is required");
-    const activated = await activateRequest(env, login);
-    const notified = await sendApproval(env, activated.email, activated.token);
-    return adminPage(
-      await listRequests(env),
-      notified
-        ? "Download access is active and the approval email is on its way."
-        : "Download access is active, but the approval email could not be sent.",
-    );
+  if (request.method !== "POST" || !["/approve", "/decline", "/revoke"].includes(url.pathname)) {
+    return new Response("Not found", { status: 404, headers: secureHeaders("text/plain; charset=utf-8") });
   }
 
-  return new Response("Not found", { status: 404, headers: secureHeaders("text/plain; charset=utf-8") });
+  if (!hasPreviewAccessOrigin(request)) throw new HttpError(403, "Invalid request origin");
+  const contentType = request.headers.get("content-type") ?? "";
+  if (!contentType.startsWith("application/x-www-form-urlencoded")) {
+    throw new HttpError(415, "Unsupported request format");
+  }
+  const form = await request.formData();
+  const login = form.get("login");
+  if (typeof login !== "string") throw new HttpError(400, "GitHub username is required");
+
+  if (url.pathname === "/decline") {
+    await declineRequest(env, login);
+    return adminPage(await listRequests(env), "The request is declined.");
+  }
+  if (url.pathname === "/revoke") {
+    await revokeAccess(env, login);
+    return adminPage(await listRequests(env), "Download access is removed.");
+  }
+
+  const activated = await activateRequest(env, login);
+  const notified = await sendApproval(env, activated.email, activated.token);
+  return adminPage(
+    await listRequests(env),
+    notified
+      ? "Download access is active and the approval email is on its way."
+      : "Download access is active, but the approval email could not be sent.",
+  );
 }
 
 export default {
