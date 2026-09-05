@@ -12,6 +12,7 @@ import {
   hasPreviewAccessOrigin,
   newClaimToken,
   parseReleaseManifest,
+  recordDownloadStatement,
   redeemClaimStatement,
   revokeAccessStatement,
 } from "./core.js";
@@ -69,10 +70,20 @@ async function requireAdmin(request: Request, env: Env): Promise<void> {
   if (!(await sameSecret(email, env.ADMIN_EMAIL))) throw new HttpError(403, "Access denied");
 }
 
-async function requireApprovedDownloader(request: Request, env: Env): Promise<void> {
+async function requireApprovedDownloader(request: Request, env: Env): Promise<string> {
   const email = await requireAccess(request, env, env.DOWNLOADS_ACCESS_AUD);
   const result = await env.DB.prepare(activeDownloaderQuery).bind(email).first();
   if (!result) throw new HttpError(403, "Preview access is not active");
+  return email;
+}
+
+/** The asset is already streaming; a failed record must not turn it into an error. */
+async function recordDownload(env: Env, identity: string, releaseTag: string, assetId: string): Promise<void> {
+  try {
+    await env.DB.prepare(recordDownloadStatement).bind(identity, releaseTag, assetId).run();
+  } catch {
+    console.error(JSON.stringify({ event: "preview_download_unrecorded" }));
+  }
 }
 
 async function listRequests(env: Env): Promise<AccessRequest[]> {
@@ -204,10 +215,10 @@ function downloadsPage(manifest: Awaited<ReturnType<typeof releaseManifest>>): R
   );
 }
 
-async function handleDownloads(request: Request, env: Env, url: URL): Promise<Response> {
+async function handleDownloads(request: Request, env: Env, ctx: ExecutionContext, url: URL): Promise<Response> {
   if (request.method === "GET" && url.pathname === "/claim") return claimAccess(request, env, url);
 
-  await requireApprovedDownloader(request, env);
+  const identity = await requireApprovedDownloader(request, env);
   const manifest = await releaseManifest(env);
   if (request.method === "GET" && url.pathname === "/") return downloadsPage(manifest);
 
@@ -220,6 +231,7 @@ async function handleDownloads(request: Request, env: Env, url: URL): Promise<Re
 
   const object = await env.RELEASES.get(asset.key);
   if (!object) throw new Error("Published release asset is missing");
+  ctx.waitUntil(recordDownload(env, identity, manifest.tag, asset.id));
   const headers = new Headers(secureHeaders(object.httpMetadata?.contentType ?? "application/octet-stream"));
   headers.set("Content-Disposition", `attachment; filename="${asset.name}"`);
   headers.set("Content-Length", String(object.size));
@@ -263,11 +275,11 @@ async function handleAdmin(request: Request, env: Env, url: URL): Promise<Respon
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     try {
       const url = new URL(request.url);
       return url.hostname === downloadsHostname
-        ? await handleDownloads(request, env, url)
+        ? await handleDownloads(request, env, ctx, url)
         : await handleAdmin(request, env, url);
     } catch (error) {
       const status = error instanceof HttpError ? error.status : 500;

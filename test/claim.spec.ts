@@ -6,6 +6,7 @@ import {
   claimTokenHash,
   declineRequestStatement,
   newClaimToken,
+  recordDownloadStatement,
   redeemClaimStatement,
   revokeAccessStatement,
 } from "../src/core.js";
@@ -32,6 +33,15 @@ const SCHEMA = `
     claimed_email TEXT COLLATE NOCASE,
     claimed_at TEXT
   ) WITHOUT ROWID`;
+
+const DOWNLOADS_SCHEMA = `
+  CREATE TABLE downloads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    identity TEXT NOT NULL COLLATE NOCASE,
+    release_tag TEXT NOT NULL,
+    asset_id TEXT NOT NULL,
+    downloaded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`;
 
 const REQUESTED = "tester@work.example";
 const GITHUB_IDENTITY = "tester@personal.example";
@@ -66,7 +76,9 @@ function revoke(login = "octocat") {
 describe("claiming an approval", () => {
   beforeEach(async () => {
     await env.DB.prepare("DROP TABLE IF EXISTS access_requests").run();
+    await env.DB.prepare("DROP TABLE IF EXISTS downloads").run();
     await env.DB.prepare(SCHEMA).run();
+    await env.DB.prepare(DOWNLOADS_SCHEMA).run();
     await env.DB.prepare(
       `INSERT INTO access_requests (email, github_login, platform) VALUES (?1, 'octocat', 'both')`,
     ).bind(REQUESTED).run();
@@ -146,6 +158,20 @@ describe("claiming an approval", () => {
     expect(await decline()).not.toBeNull();
     expect(await decline()).toBeNull();
     expect(await mayDownload(REQUESTED)).toBeNull();
+  });
+
+  it("records a served asset against the identity that fetched it", async () => {
+    await env.DB.prepare(recordDownloadStatement)
+      .bind(GITHUB_IDENTITY, "v0.1.35", "Struktly_0.1.35_aarch64.dmg")
+      .run();
+    const row = await env.DB.prepare(
+      "SELECT identity, release_tag, asset_id, downloaded_at FROM downloads",
+    ).first<{ identity: string; release_tag: string; asset_id: string; downloaded_at: string }>();
+
+    expect(row?.identity).toBe(GITHUB_IDENTITY);
+    expect(row?.release_tag).toBe("v0.1.35");
+    expect(row?.asset_id).toBe("Struktly_0.1.35_aarch64.dmg");
+    expect(row?.downloaded_at).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
   });
 
   it("lets a declined or removed decision be reversed, on a fresh link only", async () => {

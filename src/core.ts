@@ -181,6 +181,11 @@ export const redeemClaimStatement = `UPDATE access_requests
      AND claim_expires_at > CURRENT_TIMESTAMP
    RETURNING 1 AS claimed`;
 
+// One row per served asset, keyed by the Access identity the gate verified.
+// The admin reads this; the gate only ever inserts.
+export const recordDownloadStatement = `INSERT INTO downloads (identity, release_tag, asset_id)
+   VALUES (?1, ?2, ?3)`;
+
 export const declineRequestStatement = `UPDATE access_requests
    SET access_status = 'declined',
        updated_at = CURRENT_TIMESTAMP
