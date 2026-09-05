@@ -145,6 +145,20 @@ export function approvalEmail(token: string): { subject: string; text: string; h
   };
 }
 
+export const resendEndpoint = "https://api.resend.com/emails";
+
+/** The exact body the Worker posts to Resend for one approval. */
+export function approvalSend(from: string, to: string, token: string) {
+  const message = approvalEmail(token);
+  return {
+    from: `Struktly <${from}>`,
+    to: [to],
+    subject: message.subject,
+    text: message.text,
+    html: message.html,
+  };
+}
+
 // The statements the download gate turns on, kept here so the D1 test drives the
 // exact text the Worker runs rather than a copy of it. `datetime('now', ...)`
 // writes the expiry in the format CURRENT_TIMESTAMP compares against.
