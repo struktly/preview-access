@@ -21,4 +21,14 @@ describe("access boundary", () => {
     expect(response.status).toBe(403);
     expect(await response.text()).toBe("Access denied");
   });
+
+  it("will not let a claim link stand in for signing in", async () => {
+    const request = new IncomingRequest(
+      "https://downloads.struktly.app/claim?t=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    );
+    const response = await worker.fetch(request, env);
+
+    expect(response.status).toBe(403);
+    expect(await response.text()).toBe("Access denied");
+  });
 });

@@ -10,6 +10,11 @@
       "database_name": "preview-access-test"
     }
   ],
+  "send_email": [
+    {
+      "name": "EMAIL"
+    }
+  ],
   "r2_buckets": [
     {
       "binding": "RELEASES",
@@ -18,6 +23,7 @@
   ],
   "vars": {
     "ACCESS_TEAM_DOMAIN": "test.cloudflareaccess.com",
-    "ACCESS_AUD": "test-audience"
+    "ACCESS_AUD": "test-audience",
+    "NOTIFICATION_FROM": "preview@test.example"
   }
 }
