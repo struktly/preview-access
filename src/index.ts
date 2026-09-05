@@ -2,7 +2,7 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 import {
   activateRequestStatement,
   activeDownloaderQuery,
-  approvalEmail,
+  approvalSend,
   claimTokenHash,
   claimTokenPattern,
   declineRequestStatement,
@@ -12,7 +12,9 @@ import {
   hasPreviewAccessOrigin,
   newClaimToken,
   parseReleaseManifest,
+  recordDownloadStatement,
   redeemClaimStatement,
+  resendEndpoint,
   revokeAccessStatement,
 } from "./core.js";
 
@@ -21,7 +23,7 @@ const downloadsHostname = new URL(downloadsOrigin).hostname;
 type AccessRequest = {
   github_login: string;
   platform: "macos" | "linux" | "both";
-  access_status: "pending" | "active";
+  access_status: "pending" | "active" | "declined" | "revoked";
   created_at: string;
 };
 
@@ -69,10 +71,20 @@ async function requireAdmin(request: Request, env: Env): Promise<void> {
   if (!(await sameSecret(email, env.ADMIN_EMAIL))) throw new HttpError(403, "Access denied");
 }
 
-async function requireApprovedDownloader(request: Request, env: Env): Promise<void> {
+async function requireApprovedDownloader(request: Request, env: Env): Promise<string> {
   const email = await requireAccess(request, env, env.DOWNLOADS_ACCESS_AUD);
   const result = await env.DB.prepare(activeDownloaderQuery).bind(email).first();
   if (!result) throw new HttpError(403, "Preview access is not active");
+  return email;
+}
+
+/** The asset is already streaming; a failed record must not turn it into an error. */
+async function recordDownload(env: Env, identity: string, releaseTag: string, assetId: string): Promise<void> {
+  try {
+    await env.DB.prepare(recordDownloadStatement).bind(identity, releaseTag, assetId).run();
+  } catch {
+    console.error(JSON.stringify({ event: "preview_download_unrecorded" }));
+  }
 }
 
 async function listRequests(env: Env): Promise<AccessRequest[]> {
@@ -81,8 +93,8 @@ async function listRequests(env: Env): Promise<AccessRequest[]> {
      FROM access_requests
      WHERE github_login IS NOT NULL
        AND platform IN ('macos', 'linux', 'both')
-       AND access_status IN ('pending', 'active')
-     ORDER BY created_at ASC`,
+     ORDER BY CASE access_status WHEN 'pending' THEN 0 WHEN 'active' THEN 1 ELSE 2 END,
+              created_at ASC`,
   ).all<AccessRequest>();
   return result.results;
 }
@@ -116,17 +128,25 @@ async function activateRequest(env: Env, requestedLogin: string): Promise<{ emai
   return { email: activated.email, token };
 }
 
-/** The row is already committed, so a bounce must never undo an approval. */
+/**
+ * The row is already committed, so a bounce must never undo an approval.
+ * Sends through Resend's HTTP API; the key is a Worker secret seeded by the
+ * infrastructure repository, never a value in this one.
+ */
 async function sendApproval(env: Env, email: string, token: string): Promise<boolean> {
-  const message = approvalEmail(token);
   try {
-    await env.EMAIL.send({
-      to: email,
-      from: { email: env.NOTIFICATION_FROM, name: "Struktly" },
-      subject: message.subject,
-      text: message.text,
-      html: message.html,
+    const response = await fetch(resendEndpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.RESEND_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(approvalSend(env.NOTIFICATION_FROM, email, token)),
     });
+    if (!response.ok) {
+      console.error(JSON.stringify({ event: "preview_access_email_failed", status: response.status }));
+      return false;
+    }
     console.log(JSON.stringify({ event: "preview_access_email_sent" }));
     return true;
   } catch {
@@ -161,12 +181,17 @@ function actionForm(action: string, login: string, label: string, secondary = fa
 function adminPage(requests: AccessRequest[], message?: string): Response {
   const rows = requests.map((request) => {
     const login = escapeHtml(request.github_login);
+    // A declined or removed row keeps Approve: history is visible, and a
+    // decision can be reversed from here rather than by editing D1.
     const actions = request.access_status === "pending"
       ? actionForm("approve", login, "Approve") + actionForm("decline", login, "Decline", true)
-      : actionForm("revoke", login, "Remove", true);
-    return `<li><div><strong>@${login}</strong><small>${escapeHtml(request.platform)} · ${request.access_status}</small></div><div class=actions>${actions}</div></li>`;
+      : request.access_status === "active"
+        ? actionForm("revoke", login, "Remove", true)
+        : actionForm("approve", login, "Approve", true);
+    const since = escapeHtml(request.created_at.slice(0, 10));
+    return `<li><div><strong>@${login}</strong><small>${escapeHtml(request.platform)} · ${request.access_status} · requested ${since}</small></div><div class=actions>${actions}</div></li>`;
   }).join("");
-  const content = rows || "<li class=empty>No requests need attention.</li>";
+  const content = rows || "<li class=empty>No requests yet.</li>";
   const notice = message ? `<p class=notice>${escapeHtml(message)}</p>` : "";
   return new Response(
     `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Preview access · Struktly</title><style>:root{color-scheme:light dark;font:16px/1.5 system-ui,sans-serif}body{max-width:44rem;margin:4rem auto;padding:0 1.25rem}h1{font-size:1.75rem}p{color:#777}ul{list-style:none;padding:0;border-top:1px solid #8885}li{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:1rem 0;border-bottom:1px solid #8885}small{display:block;color:#777}.actions{display:flex;gap:.5rem}button{font:inherit;font-weight:650;padding:.55rem .9rem;border:0;border-radius:.45rem;background:#5b5cf0;color:white;cursor:pointer}.secondary{background:#8884;color:inherit}.notice{padding:.8rem 1rem;border-radius:.45rem;background:#26834a22;color:inherit}.empty{color:#777}</style></head><body><main><h1>Preview access</h1><p>Approve, decline, or remove download access to private release builds.</p>${notice}<ul>${content}</ul></main></body></html>`,
@@ -199,10 +224,10 @@ function downloadsPage(manifest: Awaited<ReturnType<typeof releaseManifest>>): R
   );
 }
 
-async function handleDownloads(request: Request, env: Env, url: URL): Promise<Response> {
+async function handleDownloads(request: Request, env: Env, ctx: ExecutionContext, url: URL): Promise<Response> {
   if (request.method === "GET" && url.pathname === "/claim") return claimAccess(request, env, url);
 
-  await requireApprovedDownloader(request, env);
+  const identity = await requireApprovedDownloader(request, env);
   const manifest = await releaseManifest(env);
   if (request.method === "GET" && url.pathname === "/") return downloadsPage(manifest);
 
@@ -215,6 +240,7 @@ async function handleDownloads(request: Request, env: Env, url: URL): Promise<Re
 
   const object = await env.RELEASES.get(asset.key);
   if (!object) throw new Error("Published release asset is missing");
+  ctx.waitUntil(recordDownload(env, identity, manifest.tag, asset.id));
   const headers = new Headers(secureHeaders(object.httpMetadata?.contentType ?? "application/octet-stream"));
   headers.set("Content-Disposition", `attachment; filename="${asset.name}"`);
   headers.set("Content-Length", String(object.size));
@@ -258,11 +284,11 @@ async function handleAdmin(request: Request, env: Env, url: URL): Promise<Respon
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     try {
       const url = new URL(request.url);
       return url.hostname === downloadsHostname
-        ? await handleDownloads(request, env, url)
+        ? await handleDownloads(request, env, ctx, url)
         : await handleAdmin(request, env, url);
     } catch (error) {
       const status = error instanceof HttpError ? error.status : 500;

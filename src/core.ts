@@ -145,6 +145,20 @@ export function approvalEmail(token: string): { subject: string; text: string; h
   };
 }
 
+export const resendEndpoint = "https://api.resend.com/emails";
+
+/** The exact body the Worker posts to Resend for one approval. */
+export function approvalSend(from: string, to: string, token: string) {
+  const message = approvalEmail(token);
+  return {
+    from: `Struktly <${from}>`,
+    to: [to],
+    subject: message.subject,
+    text: message.text,
+    html: message.html,
+  };
+}
+
 // The statements the download gate turns on, kept here so the D1 test drives the
 // exact text the Worker runs rather than a copy of it. `datetime('now', ...)`
 // writes the expiry in the format CURRENT_TIMESTAMP compares against.
@@ -167,7 +181,7 @@ export const activateRequestStatement = `UPDATE access_requests
        updated_at = CURRENT_TIMESTAMP
    WHERE github_login = ?1 COLLATE NOCASE
      AND platform IN ('macos', 'linux', 'both')
-     AND access_status = 'pending'
+     AND access_status IN ('pending', 'declined', 'revoked')
    RETURNING email`;
 
 export const redeemClaimStatement = `UPDATE access_requests
@@ -180,6 +194,11 @@ export const redeemClaimStatement = `UPDATE access_requests
      AND access_status = 'active'
      AND claim_expires_at > CURRENT_TIMESTAMP
    RETURNING 1 AS claimed`;
+
+// One row per served asset, keyed by the Access identity the gate verified.
+// The admin reads this; the gate only ever inserts.
+export const recordDownloadStatement = `INSERT INTO downloads (identity, release_tag, asset_id)
+   VALUES (?1, ?2, ?3)`;
 
 export const declineRequestStatement = `UPDATE access_requests
    SET access_status = 'declined',
