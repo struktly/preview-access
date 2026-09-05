@@ -1,4 +1,5 @@
-# Tidebot configuration. Every key is optional: what is not set here keeps the
+# Repository-specific policy for Tidebot, served by the hosted Worker (the
+# Tidebot GitHub App installed on this repository). No workflow runs here.
 # built-in default, and this repository's file is merged over any defaults in
 # the organisation's `.github` repository.
 #
