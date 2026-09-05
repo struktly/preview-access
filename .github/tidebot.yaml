@@ -9,7 +9,7 @@ plugins:
   area: true
   commands: true
   tide: true
-  stale: true
+  stale: false # the hosted Worker runs no scheduled sweep
   dependabot: false
   autoApprove: false
   plan: false
@@ -56,8 +56,3 @@ area:
 #   requiredContexts: [check]
 #   allowMajorUpdates: false
 
-stale:
-  daysUntilStale: 14
-  daysUntilClose: 7
-  staleLabel: stale
-  exemptLabels: [hold, pinned, dependencies]
