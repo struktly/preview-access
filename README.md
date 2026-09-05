@@ -67,15 +67,16 @@ shipping one that would deny everybody.
 ## Deploying your own copy
 
 Create the two hostnames, Access applications, and R2 bucket in your
-infrastructure stack. Onboard the sending domain once with
-`npx wrangler email sending enable <your-domain>` and publish the SPF, DKIM and
-DMARC records it emits; the `EMAIL` binding needs no key. Set the account,
-database, team domain, founder Access audience, and sender address in
-`wrangler.jsonc`. Set these Worker secrets before deploying:
+infrastructure stack. Approval mail goes through [Resend](https://resend.com):
+add your sending domain there, publish the DNS records it emits, and create an
+API key restricted to sending from that domain. Set the account, database, team
+domain, founder Access audience, and sender address in `wrangler.jsonc`. Set
+these Worker secrets before deploying:
 
 ```sh
 npx wrangler secret put ADMIN_EMAIL
 npx wrangler secret put DOWNLOADS_ACCESS_AUD
+npx wrangler secret put RESEND_API_KEY
 npm run deploy
 ```
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   approvalEmail,
+  approvalSend,
   claimTokenHash,
   claimTokenPattern,
   claimUrl,
@@ -165,5 +166,18 @@ describe("approval mail", () => {
     }
     expect(message.text.toLowerCase()).toContain("one-time pin");
     expect(message.text.toLowerCase()).toContain("github");
+  });
+});
+
+describe("the approval send", () => {
+  it("posts one message, from the configured sender, carrying the claim link", () => {
+    const token = newClaimToken();
+    const body = approvalSend("preview@test.example", "tester@work.example", token);
+
+    expect(body.from).toBe("Struktly <preview@test.example>");
+    expect(body.to).toEqual(["tester@work.example"]);
+    expect(body.text).toContain(claimUrl(token));
+    expect(body.html).toContain(escapeHtml(claimUrl(token)));
+    expect(body.subject).toBe(approvalEmail(token).subject);
   });
 });

@@ -2,7 +2,7 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 import {
   activateRequestStatement,
   activeDownloaderQuery,
-  approvalEmail,
+  approvalSend,
   claimTokenHash,
   claimTokenPattern,
   declineRequestStatement,
@@ -14,6 +14,7 @@ import {
   parseReleaseManifest,
   recordDownloadStatement,
   redeemClaimStatement,
+  resendEndpoint,
   revokeAccessStatement,
 } from "./core.js";
 
@@ -127,17 +128,25 @@ async function activateRequest(env: Env, requestedLogin: string): Promise<{ emai
   return { email: activated.email, token };
 }
 
-/** The row is already committed, so a bounce must never undo an approval. */
+/**
+ * The row is already committed, so a bounce must never undo an approval.
+ * Sends through Resend's HTTP API; the key is a Worker secret seeded by the
+ * infrastructure repository, never a value in this one.
+ */
 async function sendApproval(env: Env, email: string, token: string): Promise<boolean> {
-  const message = approvalEmail(token);
   try {
-    await env.EMAIL.send({
-      to: email,
-      from: { email: env.NOTIFICATION_FROM, name: "Struktly" },
-      subject: message.subject,
-      text: message.text,
-      html: message.html,
+    const response = await fetch(resendEndpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.RESEND_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(approvalSend(env.NOTIFICATION_FROM, email, token)),
     });
+    if (!response.ok) {
+      console.error(JSON.stringify({ event: "preview_access_email_failed", status: response.status }));
+      return false;
+    }
     console.log(JSON.stringify({ event: "preview_access_email_sent" }));
     return true;
   } catch {
