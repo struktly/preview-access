@@ -31,6 +31,22 @@ const SCHEMA = `
     claimed_at TEXT
   ) WITHOUT ROWID`;
 
+// The indexes website's migrations 0002 and 0003 put on the live table. The
+// single-token-per-approval and one-login-per-request properties these tests
+// prove rest on the two unique indexes, so a test table without them would
+// stay green while the production constraint was gone.
+const INDEXES = [
+  `CREATE UNIQUE INDEX access_requests_github_login_unique
+    ON access_requests(github_login)
+    WHERE github_login IS NOT NULL`,
+  `CREATE UNIQUE INDEX access_requests_claim_token_hash_unique
+    ON access_requests(claim_token_hash)
+    WHERE claim_token_hash IS NOT NULL`,
+  `CREATE INDEX access_requests_claimed_email
+    ON access_requests(claimed_email)
+    WHERE claimed_email IS NOT NULL`,
+];
+
 const REQUESTED = "tester@work.example";
 const GITHUB_IDENTITY = "tester@personal.example";
 
@@ -56,7 +72,9 @@ function mayDownload(identity: string) {
 describe("claiming an approval", () => {
   beforeEach(async () => {
     await env.DB.prepare("DROP TABLE IF EXISTS access_requests").run();
-    await env.DB.prepare(SCHEMA).run();
+    for (const statement of [SCHEMA, ...INDEXES]) {
+      await env.DB.prepare(statement).run();
+    }
     await env.DB.prepare(
       `INSERT INTO access_requests (email, github_login, platform) VALUES (?1, 'octocat', 'both')`,
     ).bind(REQUESTED).run();
