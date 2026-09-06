@@ -12,10 +12,6 @@ name: Deploy
 # DOWNLOADS_ACCESS_AUD stays owned by the infrastructure repo. That also means
 # the first deploy of a new Worker has to be the local one; the preflight below
 # refuses to publish a Worker that would deny everybody.
-#
-# The gate is tester-facing only. ADMIN_EMAIL went with the founder surface to
-# the private admin Worker, so the founder's address is no longer a secret this
-# public repository's Worker holds at all.
 
 on:
   push:
