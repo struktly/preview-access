@@ -1,14 +1,10 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
-  activateRequestStatement,
   activeDownloaderQuery,
   claimTokenHash,
-  declineRequestStatement,
-  newClaimToken,
   recordDownloadStatement,
   redeemClaimStatement,
-  revokeAccessStatement,
 } from "../src/core.js";
 
 // The Worker binds a database the website repository migrates, so the schema
@@ -35,9 +31,9 @@ const SCHEMA = `
   ) WITHOUT ROWID`;
 
 // The indexes website's migrations 0002 and 0003 put on the live table. The
-// single-token-per-approval and one-login-per-request properties these tests
-// prove rest on the two unique indexes, so a test table without them would
-// stay green while the production constraint was gone.
+// single-token-per-approval property the claim route rests on is the unique
+// index, so a test table without it would stay green while the production
+// constraint was gone.
 const INDEXES = [
   `CREATE UNIQUE INDEX access_requests_github_login_unique
     ON access_requests(github_login)
@@ -62,12 +58,22 @@ const DOWNLOADS_SCHEMA = `
 const REQUESTED = "tester@work.example";
 const GITHUB_IDENTITY = "tester@personal.example";
 
-async function approve(login = "octocat"): Promise<string> {
-  const token = newClaimToken();
-  const activated = await env.DB.prepare(activateRequestStatement)
-    .bind(login, await claimTokenHash(token))
-    .first<{ email: string }>();
-  expect(activated?.email).toBe(REQUESTED);
+function mintToken(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+// What the admin Worker's approval writes. Its statement is tested in that
+// repository; here it is a fixture for the rows the gate then has to judge.
+async function approve(): Promise<string> {
+  const token = mintToken();
+  await env.DB.prepare(
+    `UPDATE access_requests
+     SET access_status = 'active',
+         claim_token_hash = ?1,
+         claim_expires_at = datetime('now', '+14 days')
+     WHERE email = ?2`,
+  ).bind(await claimTokenHash(token), REQUESTED).run();
   return token;
 }
 
@@ -79,14 +85,6 @@ function redeem(token: string, identity = GITHUB_IDENTITY) {
 
 function mayDownload(identity: string) {
   return env.DB.prepare(activeDownloaderQuery).bind(identity).first();
-}
-
-function decline(login = "octocat") {
-  return env.DB.prepare(declineRequestStatement).bind(login).first();
-}
-
-function revoke(login = "octocat") {
-  return env.DB.prepare(revokeAccessStatement).bind(login).first();
 }
 
 describe("claiming an approval", () => {
@@ -124,57 +122,27 @@ describe("claiming an approval", () => {
 
   it("refuses a token that was never minted", async () => {
     await approve();
-    expect(await redeem(newClaimToken())).toBeNull();
+    expect(await redeem(mintToken())).toBeNull();
   });
 
-  it("writes an expiry in the format the redemption compares against", async () => {
+  it("refuses a token past its expiry", async () => {
     const token = await approve();
-    const row = await env.DB.prepare(
-      "SELECT claim_expires_at, claim_expires_at > CURRENT_TIMESTAMP AS live FROM access_requests",
-    ).first<{ claim_expires_at: string; live: number }>();
-
-    expect(row?.claim_expires_at).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
-    expect(row?.live).toBe(1);
-
     await env.DB.prepare(
       "UPDATE access_requests SET claim_expires_at = datetime('now', '-1 second')",
     ).run();
     expect(await redeem(token)).toBeNull();
   });
 
-  it("will not approve, or hand a token to, a request that is not pending", async () => {
-    await approve();
-    const second = newClaimToken();
-    expect(
-      await env.DB.prepare(activateRequestStatement)
-        .bind("octocat", await claimTokenHash(second))
-        .first(),
-    ).toBeNull();
-    expect(await redeem(second)).toBeNull();
-  });
-
-  it("keeps a removed approval out of the gate after it was claimed", async () => {
+  it("keeps a removed approval out of the gate, claimed or not", async () => {
     const token = await approve();
     await redeem(token);
-    expect(await revoke()).not.toBeNull();
+    await env.DB.prepare(
+      "UPDATE access_requests SET access_status = 'revoked', claim_token_hash = NULL, claim_expires_at = NULL",
+    ).run();
 
     expect(await mayDownload(GITHUB_IDENTITY)).toBeNull();
     expect(await mayDownload(REQUESTED)).toBeNull();
-  });
-
-  it("kills an unredeemed claim link when access is removed", async () => {
-    const token = await approve();
-    expect(await revoke()).not.toBeNull();
-
     expect(await redeem(token)).toBeNull();
-    expect(await mayDownload(GITHUB_IDENTITY)).toBeNull();
-  });
-
-  it("removes only active access, and declines only a pending request", async () => {
-    expect(await revoke()).toBeNull();
-    expect(await decline()).not.toBeNull();
-    expect(await decline()).toBeNull();
-    expect(await mayDownload(REQUESTED)).toBeNull();
   });
 
   it("records a served asset against the identity that fetched it", async () => {
@@ -189,20 +157,5 @@ describe("claiming an approval", () => {
     expect(row?.release_tag).toBe("v0.1.35");
     expect(row?.asset_id).toBe("Struktly_0.1.35_aarch64.dmg");
     expect(row?.downloaded_at).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
-  });
-
-  it("lets a declined or removed decision be reversed, on a fresh link only", async () => {
-    await decline();
-    const first = await approve();
-    expect(await mayDownload(REQUESTED)).not.toBeNull();
-
-    await redeem(first);
-    await revoke();
-    const second = await approve();
-
-    expect(await redeem(first)).toBeNull();
-    expect(await mayDownload(GITHUB_IDENTITY)).toBeNull();
-    expect(await redeem(second)).not.toBeNull();
-    expect(await mayDownload(GITHUB_IDENTITY)).not.toBeNull();
   });
 });

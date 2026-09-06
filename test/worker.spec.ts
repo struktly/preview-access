@@ -6,16 +6,15 @@ import worker from "../src/index.js";
 const IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 
 describe("access boundary", () => {
-  it("denies requests without a Cloudflare Access token", async () => {
-    const request = new IncomingRequest("https://preview-access.struktly.io/");
+  it("answers only on the download hostname", async () => {
+    const request = new IncomingRequest("https://preview-access.struktly.app/");
     const response = await worker.fetch(request, env, createExecutionContext());
 
-    expect(response.status).toBe(403);
-    expect(await response.text()).toBe("Access denied");
+    expect(response.status).toBe(404);
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
 
-  it("requires a separate Access token at the download hostname", async () => {
+  it("requires an Access token at the download hostname", async () => {
     const request = new IncomingRequest("https://downloads.struktly.app/");
     const response = await worker.fetch(request, env, createExecutionContext());
 

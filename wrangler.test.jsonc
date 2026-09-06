@@ -17,9 +17,6 @@
     }
   ],
   "vars": {
-    "ACCESS_TEAM_DOMAIN": "test.cloudflareaccess.com",
-    "ACCESS_AUD": "test-audience",
-    "NOTIFICATION_FROM": "preview@test.example",
-    "RESEND_API_KEY": "re_test"
+    "ACCESS_TEAM_DOMAIN": "test.cloudflareaccess.com"
   }
 }

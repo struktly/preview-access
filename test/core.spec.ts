@@ -1,27 +1,7 @@
 import { describe, expect, it } from "vitest";
-import {
-  approvalEmail,
-  approvalSend,
-  claimTokenHash,
-  claimTokenPattern,
-  claimUrl,
-  downloadsOrigin,
-  escapeHtml,
-  githubLoginPattern,
-  hasPreviewAccessOrigin,
-  newClaimToken,
-  parseReleaseManifest,
-  previewAccessOrigin,
-} from "../src/core.js";
+import { claimTokenHash, claimTokenPattern, escapeHtml, parseReleaseManifest } from "../src/core.js";
 
 describe("public input boundaries", () => {
-  it("accepts valid GitHub usernames and rejects malformed ones", () => {
-    expect(githubLoginPattern.test("n1dre")).toBe(true);
-    expect(githubLoginPattern.test("valid-user")).toBe(true);
-    expect(githubLoginPattern.test("-invalid")).toBe(false);
-    expect(githubLoginPattern.test("invalid/user")).toBe(false);
-  });
-
   it("keeps an unlabelled manifest readable and rejects a label with control characters", () => {
     const unlabelled = {
       version: 1,
@@ -103,81 +83,22 @@ describe("public input boundaries", () => {
   it("escapes every HTML-significant character", () => {
     expect(escapeHtml(`<a href='x'>&"`)).toBe("&lt;a href=&#39;x&#39;&gt;&amp;&quot;");
   });
-
-  it("accepts POSTs only from the public approval origin", () => {
-    expect(hasPreviewAccessOrigin(new Request("https://internal-worker.example/approve", {
-      headers: { Origin: previewAccessOrigin },
-    }))).toBe(true);
-    expect(hasPreviewAccessOrigin(new Request("https://internal-worker.example/approve", {
-      headers: { Referer: `${previewAccessOrigin}/` },
-    }))).toBe(true);
-    expect(hasPreviewAccessOrigin(new Request("https://internal-worker.example/approve", {
-      headers: {
-        Origin: "null",
-        "Sec-Fetch-Site": "same-origin",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-User": "?1",
-      },
-    }))).toBe(true);
-    expect(hasPreviewAccessOrigin(new Request(previewAccessOrigin, {
-      headers: { Origin: "https://attacker.example" },
-    }))).toBe(false);
-    expect(hasPreviewAccessOrigin(new Request(previewAccessOrigin, {
-      headers: { Origin: "null" },
-    }))).toBe(false);
-  });
 });
 
 describe("claim tokens", () => {
-  it("mints tokens the claim route will accept, and never the same one twice", () => {
-    const tokens = new Set(Array.from({ length: 64 }, () => newClaimToken()));
-    expect(tokens.size).toBe(64);
-    for (const token of tokens) expect(claimTokenPattern.test(token)).toBe(true);
-  });
-
-  it("rejects anything that is not a minted token", () => {
+  it("accepts the shape the admin mints and rejects anything else", () => {
+    expect(claimTokenPattern.test("A".repeat(43))).toBe(true);
     expect(claimTokenPattern.test("")).toBe(false);
     expect(claimTokenPattern.test("../../etc/passwd")).toBe(false);
-    expect(claimTokenPattern.test(`${newClaimToken()}x`)).toBe(false);
+    expect(claimTokenPattern.test(`${"A".repeat(43)}x`)).toBe(false);
   });
 
   it("stores a stable hash rather than the token itself", async () => {
     expect(await claimTokenHash("abc"))
       .toBe("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
-    const token = newClaimToken();
+    const token = "A".repeat(43);
     const hash = await claimTokenHash(token);
     expect(hash).toBe(await claimTokenHash(token));
     expect(hash).not.toContain(token);
-  });
-});
-
-describe("approval mail", () => {
-  it("carries the claim link in both parts and nothing about the request", () => {
-    const token = newClaimToken();
-    const message = approvalEmail(token);
-    const link = claimUrl(token);
-
-    expect(link.startsWith(`${downloadsOrigin}/claim?t=`)).toBe(true);
-    expect(message.text).toContain(link);
-    expect(message.html).toContain(link);
-    for (const part of [message.subject, message.text, message.html]) {
-      expect(part).not.toContain("@");
-    }
-    expect(message.text.toLowerCase()).toContain("one-time pin");
-    expect(message.text.toLowerCase()).toContain("github");
-  });
-});
-
-describe("the approval send", () => {
-  it("posts one message, from the configured sender, carrying the claim link", () => {
-    const token = newClaimToken();
-    const body = approvalSend("preview@test.example", "tester@work.example", token);
-
-    expect(body.from).toBe("Struktly <preview@test.example>");
-    expect(body.to).toEqual(["tester@work.example"]);
-    expect(body.text).toContain(claimUrl(token));
-    expect(body.html).toContain(escapeHtml(claimUrl(token)));
-    expect(body.subject).toBe(approvalEmail(token).subject);
   });
 });
