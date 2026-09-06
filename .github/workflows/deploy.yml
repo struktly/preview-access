@@ -8,11 +8,10 @@ name: Deploy
 # cloudflare-preview-access OpenTofu root and published here by github-platform.
 # It cannot read D1, write R2, or touch Access policy.
 #
-# The Worker's own secrets are not here. `wrangler deploy` preserves them, so
-# ADMIN_EMAIL and DOWNLOADS_ACCESS_AUD stay owned by the infrastructure repo and
-# the founder's address never becomes a public repository's Actions secret. That
-# also means the first deploy of a new Worker has to be the local one; the
-# preflight below refuses to publish a Worker that would deny everybody.
+# The Worker's own secret is not here. `wrangler deploy` preserves it, so
+# DOWNLOADS_ACCESS_AUD stays owned by the infrastructure repo. That also means
+# the first deploy of a new Worker has to be the local one; the preflight below
+# refuses to publish a Worker that would deny everybody.
 
 on:
   push:
@@ -58,7 +57,7 @@ jobs:
             echo "struktly/infrastructure, then re-run this workflow." >&2
             exit 1
           fi
-          for name in ADMIN_EMAIL DOWNLOADS_ACCESS_AUD; do
+          for name in DOWNLOADS_ACCESS_AUD; do
             if ! printf '%s' "$seeded" | grep -q "\"$name\""; then
               echo "Worker secret $name is not set; deploying now would deny every" >&2
               echo "request. Run 'make deploy-preview-access' in struktly/infrastructure." >&2
