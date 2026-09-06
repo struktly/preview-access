@@ -1,0 +1,8 @@
+# Tool pins for this repository. CI installs from here through mise-action,
+# so a version is stated once.
+[tools]
+node = "22.23.2"
+
+[tasks.check]
+description = "Type-check and test — what CI runs."
+run = "npm run check"
