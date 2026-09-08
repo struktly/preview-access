@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   workflow-policy:
-    uses: fridthjof-labs/infra-kit/.github/workflows/workflow-ci.yml@fd1e6a54e4ae6ad303bbe023e00135b5d53ae2ce # shared CI standard
+    uses: fridthjof-labs/infra-kit/.github/workflows/workflow-ci.yml@54c86f4769a6c104a0f1f3d992360ce7078f20b9 # shared CI standard
 
   check:
     if: ${{ !cancelled() }}
